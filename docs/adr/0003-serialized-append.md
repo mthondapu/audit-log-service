@@ -17,6 +17,13 @@ Concurrent writers must never fork the chain. `sequence` must start at 1, be con
 - Bound lock waiting with a lock timeout; the server does not retry failed appends automatically.
 - Implement the transaction with SQLAlchemy 2.x Core and explicit transaction control. Redaction, retention, and export reuse the append path inside their own transactions.
 
+## Implementation (Phase 4)
+
+- `append_event` runs inside the caller's explicit READ COMMITTED transaction and refuses any other; it sets `lock_timeout` to 5 seconds, takes `pg_advisory_xact_lock` on a fixed 64-bit key, reads the head, and takes `recordedAt` from `clock_timestamp()` (the time after locking, unlike `now()`, which is the transaction start), clamped to the head's `recordedAt`.
+- The integrity core seals the record; the record row and its payload-value rows are inserted in the same transaction.
+- Tables: `audit_records` (with `uq_audit_records_sequence`, `uq_audit_records_previous_hash`, and `sequence >= 1`) and `audit_payload_values` (keyed by record and JSON Pointer, with a foreign key to the record). `recordedAt` and `timestamp` are `timestamptz`, whose microsecond precision round-trips the canonical text exactly.
+- The initial migration is irreversible: its downgrade raises instead of dropping audit tables.
+
 ## Consequences
 
 - There are no gaps and no forks; a rolled-back transaction leaves no trace.

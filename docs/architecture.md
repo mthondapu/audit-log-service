@@ -218,7 +218,7 @@ See [ADR-0009](adr/0009-database-privileges-and-tamper-boundary.md).
 | Checkpoint CLI access | Chain verification before checkpoint signing | Read-only access to the audit data (D4); no insert, update, or delete |
 | Tamper actor | Demonstrations of detection | Privileged direct modification of the database, outside the application trust boundary |
 
-Immutable records are additionally protected by a database-level guard against update and delete for the application role. Exact grants are an implementation detail.
+Immutable records are additionally protected by a database-level guard for the application role. In Phase 4 the guard is the application role's privileges: `audit_log_app` (a `NOLOGIN` group role provisioned outside the migrations) has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`, with no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`. There is deliberately no trigger that blocks every role, so the future privileged tamper tooling needs no trigger disabling (ADR-0009). Checkpoint CLI and tamper-actor grants are deferred.
 
 ## 15. Tamper demonstration boundary
 
@@ -296,7 +296,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Retention event resource identity; export audit event payload fields.
 - Reserved namespace prefix and access-event vocabulary names.
 - Exact environment-variable names and configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
-- Table and column names, exact database grants, limits, batch sizes, cursor encoding, advisory-lock key, and timeouts.
+- Checkpoint CLI and tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).
 
 ## 22. Architecture decision references
 

@@ -449,7 +449,7 @@ This is a developer-derived engineering control supporting the assignment's inte
 - the application cannot update or delete immutable audit records; and
 - privileged tamper operations are outside the normal application path.
 
-Exact roles, grants, and provisioning are implementation details (§13).
+Exact roles, grants, and provisioning are implementation details (§13). The application role and its grants were decided in Phase 4 (ADR-0009).
 
 #### Integrity design
 
@@ -820,7 +820,7 @@ Requirements requiring technical design decisions are intentionally not finalize
 Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), retention, redaction, and export decisions (Focused Discussion #3), and security and Scenario C decisions (Focused Discussion #4) have been incorporated. The following remain open:
 
 - **Security:**
-  - exact database roles and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1).
+  - checkpoint CLI and tamper-actor database roles and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1; the application role and its grants are decided in ADR-0009).
 - **Checkpoint and key design:**
   - the checkpoint CLI syntax, and the checkpoint lifecycle, timing, artifact format, and storage location;
   - whether checkpoint and export signing keys are separate;
@@ -830,7 +830,6 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the reserved namespace prefix and the access-event vocabulary names;
   - exact environment-variable names, configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
-  - table and schema names;
   - retention batch size and execution bound, export size limit, and reason length.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 

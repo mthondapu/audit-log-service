@@ -1228,3 +1228,145 @@ recommendations. My decisions (16:17 UTC):
 
 **Sign-off:** I gave the A1–A7 and B1–B6 decisions recorded above. My review and sign-off of the Phase 3 implementation
 are pending.
+
+### 2026-09-28 — Phase 4: PostgreSQL persistence and serialized append
+
+**Date/Time:** 2026-09-28, from 16:38 UTC (from session timestamps: Phase 4 requested at 16:38; my decisions on P1–P5
+given at 16:42).
+
+**Activity:** Developer-led, AI-assisted implementation of the database schema, the initial migration, the SQLAlchemy
+Core persistence boundary, and the serialized append path, with PostgreSQL integration tests. No REST API.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Decisions already approved before this phase:** ADR-0003 (advisory lock at READ COMMITTED, head read after locking,
+database clock clamped against the head, `UNIQUE(sequence)`, `UNIQUE(previous_hash)`, no foreign key from
+`previous_hash`), ADR-0004 (committed structure in the record, values stored separately as canonical text with salts),
+ADR-0009 (privilege boundaries in principle), and the Phase 3 integrity core.
+
+**Clarifications before coding.** Claude stopped because roles and grants, the database guard, the environment-variable
+names, the missing-database behavior, and the downgrade policy were deferred or unset. My decisions (16:42 UTC):
+
+- **P1:** migrations run as the schema owner and create no server-wide roles. `audit_log_app` is a `NOLOGIN` group
+  role, created by a separate owner-run provisioning step, and no credentials are stored in migrations or source
+  control.
+- **P2 (changed from Claude's recommendation):** Claude proposed triggers rejecting `UPDATE`, `DELETE`, and `TRUNCATE`
+  on records for every role. I rejected that, because it would block the future privileged tamper tooling unless it
+  disabled triggers. The guard is scoped to `audit_log_app`: `SELECT` and `INSERT` on `audit_records`; `SELECT`,
+  `INSERT`, and `DELETE` on `audit_payload_values`; no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`.
+  Checkpoint and tamper roles are not implemented. Recorded in ADR-0009.
+- **P3:** `AUDIT_LOG_MIGRATION_DATABASE_URL` for Alembic (owner) and `AUDIT_LOG_TEST_DATABASE_URL` for integration
+  tests. The application's runtime database URL is not introduced yet; persistence functions receive a connection from
+  their caller.
+- **P4:** integration tests fail clearly when `AUDIT_LOG_TEST_DATABASE_URL` is not set; they are never skipped.
+- **P5:** the initial migration's downgrade raises an error instead of dropping audit tables.
+
+**What the AI implemented:**
+
+- `src/audit_log_service/persistence/schema.py`: SQLAlchemy Core tables.
+  - `audit_records` holds the immutable record: `uuid` id, `bigint` sequence, the hashes, the event fields,
+    `timestamptz` `timestamp` and `recorded_at`, and the `jsonb` committed payload. Its constraints are
+    `uq_audit_records_sequence`, `uq_audit_records_previous_hash`, and `ck_audit_records_sequence_positive`.
+  - `audit_payload_values` holds each value's canonical text and salt, keyed by `(record_id, pointer)`, with a foreign
+    key to the record.
+  - There is no foreign key from `previous_hash`.
+- `src/audit_log_service/persistence/audit_log.py`:
+  - `append_event` requires the caller's explicit READ COMMITTED transaction. It prepares the id and payload
+    commitments first. Then it runs `SET LOCAL lock_timeout = '5s'`, takes `pg_advisory_xact_lock` on a fixed key,
+    reads the head, and takes `clock_timestamp()` clamped to the head's `recordedAt`. It seals the record with the
+    Phase 3 core and inserts the record and its values.
+  - `load_chain_entries` reads records and values in one statement, in `sequence` order, for `verify_chain`.
+  - There is no update or delete function.
+- `migrations/` and `alembic.ini`:
+  - the hand-written, irreversible migration `0001`, which refuses to run if `audit_log_app` is missing, creates both
+    tables, revokes `PUBLIC` access, and grants the approved privileges;
+  - an `env.py` that reads `AUDIT_LOG_MIGRATION_DATABASE_URL` or a connection supplied by a test.
+- `scripts/provision_database_roles.sql`: the idempotent, owner-run creation of the `NOLOGIN` role. It contains no
+  credentials.
+- `README.md`: local database setup and how to run the tests.
+- `pyproject.toml`: Pyright now also checks `migrations/`. No dependencies were added.
+
+**Implementation choices within the approved decisions** (for my review):
+
+- The lock timeout (5 seconds) and the lock key are implementation details under ADR-0003.
+- `recordedAt` uses `clock_timestamp()` because `now()` is the transaction start, which is before the lock.
+- The payload-value foreign key to the record is permitted, because retention and redaction delete values, not
+  records.
+
+**Tests (51 new, 419 in total), in `tests/integration/`, against a real PostgreSQL 18 server:**
+
+- The harness:
+  - provisions the role;
+  - creates a throwaway database per session, migrated through Alembic;
+  - empties the tables before each test;
+  - runs application-path tests as `audit_log_app` through `SET ROLE`, so no application password exists.
+- Append:
+  - genesis and sequence 1, then sequence 2 linking to its predecessor;
+  - persisted hashes match the integrity core, and values open their commitments;
+  - an empty payload stores no values;
+  - a loaded chain verifies, and several appends in one transaction work.
+- `recordedAt`:
+  - it is bracketed by the database clock;
+  - it is canonical UTC whatever the session time zone;
+  - it is clamped to a later head, including equal values;
+  - it never moves backwards.
+- Failure and rollback:
+  - a caller exception, a failure while storing values, and a database error (NUL character) all leave no rows;
+  - invalid events are rejected before anything is written;
+  - a missing transaction and the wrong isolation level are refused.
+- Concurrency:
+  - 8 writers × 6 appends produce one contiguous, unforked, verifying chain;
+  - a waiting writer links to the record committed before it, with `recordedAt` taken after the lock was released;
+  - the lock wait is bounded by `lock_timeout`.
+- Constraints: a duplicate sequence, a duplicate `previous_hash`, and a non-positive sequence are rejected.
+- Privileges:
+  - `audit_log_app` has exactly the approved grants and cannot log in;
+  - `UPDATE`, `DELETE`, and `TRUNCATE` on records, `UPDATE` and `TRUNCATE` on values, trigger disabling, dropping
+    constraints, and reading `alembic_version` are all refused;
+  - deleting values is allowed;
+  - the owner is not blocked, because the guard is role-scoped (P2);
+  - a static check confirms the persistence package issues no update or delete.
+- Migrations:
+  - the migrated schema matches the Core tables, and the approved constraints exist;
+  - there is no foreign key from `previous_hash`;
+  - the migration is deterministic across fresh databases, and an upgrade at head is a no-op;
+  - downgrade is refused and the tables survive;
+  - the command-line path uses `AUDIT_LOG_MIGRATION_DATABASE_URL`, and fails clearly without it;
+  - the migration refuses to run when the role is missing.
+- One property test (Hypothesis, 40 examples): any accepted payload round-trips through PostgreSQL and verifies.
+- Without `AUDIT_LOG_TEST_DATABASE_URL`, the integration tests fail with a clear message, as P4 requires.
+
+**Documentation updates:**
+
+- ADR-0009: the P2 decisions.
+- ADR-0003: the implementation notes.
+- `architecture.md`: §14 (the guard as application-role privileges) and §21 (resolved details removed; checkpoint and
+  tamper grants still deferred).
+- `requirements.md`: NFR-1 and §13 (the application role decided; checkpoint and tamper roles still deferred; table
+  names removed from the deferred list).
+- `README.md`.
+
+**Deferred:**
+
+- checkpoint CLI and tamper-actor roles, and the provisioning of the tamper environment;
+- the application's runtime database URL and configuration integration (API phase);
+- limits, batch sizes, and cursor encoding;
+- all later-phase features: retention, redaction, `PAYLOAD_VALUE_MISSING`, checkpoints, and exports.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18.6 container
+(localhost only, trust authentication, no password, removed afterwards):
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 419 passed (367 unit, 51 integration, and 1 package test), with 100% statement and branch
+  coverage. The concurrency tests passed five repeated runs.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+- The Alembic command line was also exercised: `upgrade head`, `current`, and a refused `downgrade base`.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the P1–P5 decisions recorded above. My review and sign-off of the Phase 4 implementation are
+pending.

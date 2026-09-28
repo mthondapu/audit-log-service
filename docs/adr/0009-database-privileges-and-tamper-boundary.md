@@ -24,9 +24,18 @@ Append-only behavior must not depend only on application code. The assignment's 
 - Detection of tampering relies on verification and checkpoints, which is what the demonstrations exercise.
 - Owner and tamper credentials must never appear in the application's configuration.
 
+## Application role and guard (Phase 4 decisions)
+
+Decided by the developer on 2026-09-28, before Phase 4 implementation:
+
+- **Provisioning.** Migrations run as the schema owner and do not create server-wide roles. `audit_log_app` is a `NOLOGIN` group role, created by a separate owner-run provisioning step. Login users are made members of it outside source control. No credentials appear in migrations or the repository.
+- **Grants.** `audit_log_app` has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`. It has no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`.
+- **Guard.** The database-level guard is scoped to the application role and enforced through these privileges. There is deliberately **no** trigger that rejects changes for every role: such a trigger would block the future privileged tamper tooling unless it disabled triggers or relied on superuser behavior, which is not the intended design.
+- The application persistence package exposes no update or delete operation on `audit_records`.
+
 ## Deferred
 
-- Exact grants, role names, and how the demonstration environment provisions the tamper actor.
+- Checkpoint CLI and tamper-actor roles and grants, and how the demonstration environment provisions the tamper actor.
 
 ## Alternatives considered
 
