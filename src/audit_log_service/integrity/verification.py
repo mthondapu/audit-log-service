@@ -8,18 +8,25 @@ When several violations apply to one record, the first in `ViolationType` order 
 Malformed stored hashes count as a mismatch of that hash. Results never contain payload values,
 salts, payload keys, `actorId`, `resourceId`, or `recordedBy`.
 
-Not implemented here, and deferred: `PAYLOAD_VALUE_MISSING` (with retention and redaction), and
-`ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (with checkpoints). Missing payload values are therefore
-not reported, and tail truncation is not detectable by this verifier alone.
+A missing payload value is `PAYLOAD_VALUE_MISSING` unless a later, valid `AUDIT_LOG_REDACTION`
+event names the record and lists that value's pointer (requirements FR-3, FR-6). Authorization by
+retention, and `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (with checkpoints), are not implemented yet;
+tail truncation is not detectable by this verifier alone.
 """
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
+from typing import cast
 
 from audit_log_service.integrity.canonical import is_sha256_hex
-from audit_log_service.integrity.commitments import PayloadValue, values_open_commitments
+from audit_log_service.integrity.commitments import (
+    PayloadValue,
+    committed_pointers,
+    reveal_payload,
+    values_open_commitments,
+)
 from audit_log_service.integrity.errors import IntegrityInputError
 from audit_log_service.integrity.hashing import (
     GENESIS_PREVIOUS_HASH,
@@ -28,6 +35,8 @@ from audit_log_service.integrity.hashing import (
     compute_record_hash,
 )
 from audit_log_service.integrity.timestamps import parse_timestamp
+
+REDACTION_EVENT_TYPE = "AUDIT_LOG_REDACTION"
 
 
 class ViolationType(StrEnum):
@@ -39,6 +48,7 @@ class ViolationType(StrEnum):
     PREVIOUS_HASH_MISMATCH = "PREVIOUS_HASH_MISMATCH"
     CONTENT_HASH_MISMATCH = "CONTENT_HASH_MISMATCH"
     PAYLOAD_VALUE_MISMATCH = "PAYLOAD_VALUE_MISMATCH"
+    PAYLOAD_VALUE_MISSING = "PAYLOAD_VALUE_MISSING"
     RECORD_HASH_MISMATCH = "RECORD_HASH_MISMATCH"
     RECORDED_AT_REGRESSION = "RECORDED_AT_REGRESSION"
 
@@ -76,25 +86,38 @@ class VerificationResult:
 
 
 def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
-    """Verify an ordered sequence of records from genesis."""
+    """Verify an ordered sequence of records from genesis.
+
+    Pass 1 applies every per-record check except missing payload values. A missing value can be
+    authorized only by a later, valid redaction event, so pass 2 checks missing values once every
+    redaction event is known, keeping the `ViolationType` precedence.
+    """
+    ordered = list(entries)
     seen_sequences: set[int] = set()
     predecessor: AuditRecord | None = None
-    records_checked = 0
+    checked: list[ViolationType | None] = []
+    for entry in ordered:
+        checked.append(_first_violation(entry, predecessor, seen_sequences))
+        seen_sequences.add(entry.record.sequence)
+        predecessor = entry.record
+
+    authorized = _redaction_authorizations(ordered, checked)
     violation_count = 0
     first_violation: Violation | None = None
-
-    for entry in entries:
+    for entry, violation_type in zip(ordered, checked, strict=True):
         record = entry.record
-        violation_type = _first_violation(entry, predecessor, seen_sequences)
+        # Missing values rank after the pass-1 checks up to PAYLOAD_VALUE_MISMATCH.
+        outranks_missing = violation_type is not None and (
+            _PRECEDENCE.index(violation_type) < _MISSING_RANK
+        )
+        if not outranks_missing and _has_unauthorized_missing_value(entry, authorized):
+            violation_type = ViolationType.PAYLOAD_VALUE_MISSING
         if violation_type is not None:
             violation_count += 1
             if first_violation is None:
                 first_violation = Violation(
                     type=violation_type, sequence=record.sequence, record_id=record.content.id
                 )
-        seen_sequences.add(record.sequence)
-        predecessor = record
-        records_checked += 1
 
     head = (
         None
@@ -103,10 +126,61 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
     )
     return VerificationResult(
         intact=violation_count == 0,
-        records_checked=records_checked,
+        records_checked=len(ordered),
         head=head,
         violation_count=violation_count,
         first_violation=first_violation,
+    )
+
+
+_PRECEDENCE = list(ViolationType)
+_MISSING_RANK = _PRECEDENCE.index(ViolationType.PAYLOAD_VALUE_MISSING)
+
+
+def _redaction_authorizations(
+    entries: list[ChainEntry], checked: list[ViolationType | None]
+) -> dict[tuple[str, str], int]:
+    """Map (target record id, pointer) to the latest valid redaction event's sequence.
+
+    A redaction event authorizes only if it passed every check in pass 1 and none of its own
+    values is missing (a redaction event cannot itself be redacted).
+    """
+    authorized: dict[tuple[str, str], int] = {}
+    for entry, violation_type in zip(entries, checked, strict=True):
+        record = entry.record
+        if violation_type is not None or record.content.event_type != REDACTION_EVENT_TYPE:
+            continue
+        redaction = _redaction_payload(entry)
+        if redaction is None:
+            continue
+        target_id, paths = redaction
+        for pointer in paths:
+            key = (target_id, pointer)
+            authorized[key] = max(authorized.get(key, 0), record.sequence)
+    return authorized
+
+
+def _redaction_payload(entry: ChainEntry) -> tuple[str, list[str]] | None:
+    revealed = reveal_payload(entry.record.content.payload, entry.payload_values)
+    payload = revealed.payload
+    if revealed.missing or set(payload) != {"targetId", "paths", "reason"}:
+        return None
+    target_id, paths = payload["targetId"], payload["paths"]
+    if not isinstance(target_id, str) or not isinstance(paths, list):
+        return None
+    if not all(isinstance(path, str) for path in paths):
+        return None
+    return target_id, cast(list[str], paths)
+
+
+def _has_unauthorized_missing_value(
+    entry: ChainEntry, authorized: dict[tuple[str, str], int]
+) -> bool:
+    record = entry.record
+    return any(
+        authorized.get((record.content.id, pointer), 0) <= record.sequence
+        for pointer in committed_pointers(record.content.payload)
+        if pointer not in entry.payload_values
     )
 
 

@@ -178,7 +178,7 @@ Verification behavior (design decision):
 - verification scans the complete chain in `sequence` order against a consistent database snapshot;
 - verification starts at `sequence` 1 using the genesis value; under the current retention model (FR-5), verification always starts from genesis, and starting from an authenticated retention boundary is reserved for future physical deletion;
 - verification continues after the first violation, counting at most one violation per record, and reports the first violation and the total count; a complete list of violations is not returned in v1;
-- when several violations apply to one record, the reported type follows this precedence: `SEQUENCE_DUPLICATE`, `SEQUENCE_GAP`, `GENESIS_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`. A malformed stored hash, such as one of the wrong length or in uppercase, counts as a mismatch of that hash;
+- when several violations apply to one record, the reported type follows this precedence: `SEQUENCE_DUPLICATE`, `SEQUENCE_GAP`, `GENESIS_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `PAYLOAD_VALUE_MISSING`, `RECORD_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`. A malformed stored hash, such as one of the wrong length or in uppercase, counts as a mismatch of that hash;
 - each record is checked against the record actually preceding it. A repeated `sequence` is `SEQUENCE_DUPLICATE`; a first record other than `sequence` 1, or any other `sequence` that is not the predecessor's plus one, is `SEQUENCE_GAP`; `GENESIS_MISMATCH` means `sequence` 1 has a `previousHash` other than the genesis value; and
 - `RECORDED_AT_REGRESSION` applies only when a record's `recordedAt` is strictly earlier than its predecessor's; equal values are valid.
 
@@ -197,7 +197,7 @@ The v1 verification response shall contain:
 
 Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. The mechanics of `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` are deferred to the checkpoint implementation (FR-4), together with the checkpoint format, trusted-anchor lifecycle, and signature semantics.
 
-`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. It is deferred to the retention and redaction implementation, which will finalize the authorization evidence; until then, verification checks only the payload values that are present.
+`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. Since Phase 8 it is reported with the fixed message below, and it ranks immediately after `PAYLOAD_VALUE_MISMATCH`. A redaction event authorizes a missing value when it is a later `AUDIT_LOG_REDACTION` event with no violation of its own and no missing values, whose `targetId` is the record and whose `paths` list the value's pointer. Authorization by retention (rule 1 below) is implemented with retention (FR-5).
 
 Missing-value authorization rule (approved in principle, Focused Discussion #4). A missing payload value is authorized when:
 
@@ -237,11 +237,12 @@ The API definition (Phase 7, developer decisions D1 to D4):
 | `CONTENT_HASH_MISMATCH` | The record's content does not match its contentHash. |
 | `PAYLOAD_VALUE_MISMATCH` | A stored payload value does not match its commitment. |
 | `RECORD_HASH_MISMATCH` | The record's recordHash does not match its sequence, previousHash, and contentHash. |
+| `PAYLOAD_VALUE_MISSING` | A payload value is missing without an authorizing redaction or retention event. |
 | `RECORDED_AT_REGRESSION` | The record's recordedAt is earlier than the preceding record's recordedAt. |
 
 - the endpoint takes no query parameters; any query parameter, unknown or repeated, is rejected with `422`.
 
-Until the later phases are implemented, verification does not detect a deleted payload value (`PAYLOAD_VALUE_MISSING`, with retention and redaction), truncation of the newest records, or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`, with checkpoints). Modification, deletion, insertion, and reordering of records, and changed payload values, are detected.
+Until checkpoints are implemented, verification does not detect truncation of the newest records or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`). Modification, deletion, insertion, and reordering of records, changed payload values, and (since Phase 8) payload values deleted without an authorizing redaction are detected. Until retention is implemented, no retention event can authorize a missing value.
 
 ### FR-4 — Integrity Anchoring / Checkpoints
 
@@ -351,6 +352,17 @@ Redaction design (design decision, Focused Discussion #3):
   The endpoint is `POST /audit/events/{id}/redactions`.
 
 Response representation of redacted values is defined in FR-2. Authorization of missing values is defined in FR-3.
+
+The API definition (Phase 8, developer decisions):
+
+- the request body is `{"paths": [...], "reason": "..."}`, with 1 to 100 RFC 6901 JSON Pointers and a reason of 1 to 1000 characters that is not whitespace only and is stored exactly as given. The existing 64 KiB body limit applies, so `413` and `415` are returned as for appends;
+- a pointer may identify a leaf, an object, an array, or, with `""`, the whole payload; a container pointer covers every value beneath it. Repeated pointers are allowed;
+- checks run in this order: body syntax and schema (`400`, `422`), target lookup (`404`, including an identifier that is not a UUID), system-event or archived target (`409`), pointer resolution (`422` for a pointer that does not identify a value), and nothing new to redact (`409`);
+- every event type beginning with `AUDIT_LOG_` is a system event and cannot be redacted, including redaction events themselves;
+- the redaction event has `eventType` `AUDIT_LOG_REDACTION`, `timestamp` null, the target's `actorId`, `resourceType`, and `resourceId`, the operator as `recordedBy`, and the payload `{"targetId": <target id>, "paths": [<pointers of the values actually redacted, sorted>], "reason": <reason>}`; and
+- the redaction runs in one transaction under the append lock: target lookup, value resolution, deletion of the covered values and salts, and the append of the redaction event. `contentHash` and `recordHash` are never rewritten.
+
+No record is archived until retention (FR-5) is implemented, so the archived-target rule has nothing to reject yet.
 
 Redaction security (design decision, Focused Discussion #4):
 

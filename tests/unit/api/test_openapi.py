@@ -73,6 +73,7 @@ def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any])
         ("/audit/events", "get"),
         ("/audit/events/{id}", "get"),
         ("/audit/verify", "get"),
+        ("/audit/events/{id}/redactions", "post"),
     }
 
 
@@ -141,6 +142,38 @@ def test_verify_documents_its_statuses_and_result(openapi: dict[str, Any]) -> No
     ]
     assert set(schemas["Violation"]["properties"]) == {"type", "sequence", "recordId", "message"}
     assert set(schemas["Anchor"]["properties"]) == {"status", "sequence"}
+
+
+def test_redaction_documents_its_body_statuses_and_result(openapi: dict[str, Any]) -> None:
+    redaction = openapi["paths"]["/audit/events/{id}/redactions"]["post"]
+
+    assert redaction["requestBody"]["content"] == {
+        "application/json": {"schema": {"$ref": "#/components/schemas/RedactionRequest"}}
+    }
+    assert set(redaction["responses"]) == {
+        "201",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "413",
+        "415",
+        "422",
+        "503",
+    }
+    assert _problem_codes(redaction["responses"]) == set(redaction["responses"]) - {"201"}
+    assert "Location" in redaction["responses"]["201"]["headers"]
+    body = openapi["components"]["schemas"]["RedactionRequest"]
+    assert set(body["properties"]) == {"paths", "reason"}
+    assert set(body["required"]) == {"paths", "reason"}
+    assert body["additionalProperties"] is False
+    assert (body["properties"]["paths"]["minItems"], body["properties"]["paths"]["maxItems"]) == (
+        1,
+        100,
+    )
+    reason = body["properties"]["reason"]
+    assert (reason["minLength"], reason["maxLength"]) == (1, 1000)
 
 
 def test_get_documents_its_statuses(openapi: dict[str, Any]) -> None:

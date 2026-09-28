@@ -1,7 +1,6 @@
 """Response schemas and the public audit event representation (requirements FR-2, NFR-7)."""
 
-import json
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,6 +9,7 @@ from audit_log_service.application.verification import (
     ChainVerification as ApplicationChainVerification,
 )
 from audit_log_service.integrity.canonical import SCHEME
+from audit_log_service.integrity.commitments import reveal_payload
 from audit_log_service.integrity.verification import ChainEntry
 
 
@@ -57,13 +57,14 @@ class ProblemDetails(BaseModel):
 
 
 def represent(entry: ChainEntry) -> dict[str, Any]:
-    """Build the public representation. Salts, pointers, and commitments are never included.
+    """Build the public representation. Salts and commitments are never included.
 
-    Until redaction and retention exist, `redactedPaths` is always empty and `archived` is always
-    false (Phase 5 decision C2).
+    Values that are no longer stored (redacted) render as `null`, and their JSON Pointers are
+    listed in `redactedPaths` (FR-2). Until retention exists, `archived` is always false.
     """
     record = entry.record
     content = record.content
+    revealed = reveal_payload(content.payload, entry.payload_values)
     return AuditEvent(
         id=content.id,
         sequence=record.sequence,
@@ -74,34 +75,13 @@ def represent(entry: ChainEntry) -> dict[str, Any]:
         timestamp=content.timestamp,
         recordedAt=content.recorded_at,
         recordedBy=content.recorded_by,
-        payload=_payload(content.payload, entry),
-        redactedPaths=[],
+        payload=revealed.payload,
+        redactedPaths=revealed.missing,
         archived=False,
         contentHash=record.content_hash,
         previousHash=record.previous_hash,
         recordHash=record.record_hash,
     ).model_dump()
-
-
-def _payload(structure: dict[str, Any], entry: ChainEntry) -> dict[str, Any]:
-    """Rebuild the payload from the committed structure and the stored canonical values."""
-
-    def rebuild(node: object, pointer: str) -> Any:
-        if isinstance(node, dict):
-            items = cast(dict[str, object], node).items()
-            return {key: rebuild(item, f"{pointer}/{_pointer_token(key)}") for key, item in items}
-        if isinstance(node, list):
-            elements = cast(list[object], node)
-            return [rebuild(item, f"{pointer}/{index}") for index, item in enumerate(elements)]
-        stored = entry.payload_values.get(pointer)
-        return None if stored is None else json.loads(stored.canonical_text)
-
-    return {key: rebuild(item, f"/{_pointer_token(key)}") for key, item in structure.items()}
-
-
-def _pointer_token(key: str) -> str:
-    # RFC 6901 escaping, matching the keys under which values are stored.
-    return key.replace("~", "~0").replace("/", "~1")
 
 
 class ChainHead(BaseModel):

@@ -38,7 +38,11 @@ The service reads its configuration from the environment once, at startup, and r
 uv run uvicorn audit_log_service.api.app:create_app --factory
 ```
 
-Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, and `GET /audit/verify`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, and `POST /audit/events/{id}/redactions`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+
+## Redaction guidance for operators
+
+Redaction (`POST /audit/events/{id}/redactions`, administrators only) permanently deletes the selected payload values and records who did it and why in an `AUDIT_LOG_REDACTION` event. The reason is stored and shown to readers exactly as given, so it must never contain the value being redacted. Redaction cannot be undone, and payload keys and structure remain visible.
 
 ## Tests
 

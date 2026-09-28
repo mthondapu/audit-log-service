@@ -29,8 +29,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from audit_log_service.api.errors import ApiProblem, problem_json, request_id_of
 from audit_log_service.api.events import router as events_router
+from audit_log_service.api.redactions import router as redactions_router
 from audit_log_service.api.verification import router as verification_router
 from audit_log_service.application.events import EventSubmission
+from audit_log_service.application.redactions import RedactionRequest
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import DATABASE_URL_VARIABLE, Settings, load_settings
 from audit_log_service.problem_details import problem
@@ -70,6 +72,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.engine = engine
     app.include_router(events_router)
     app.include_router(verification_router)
+    app.include_router(redactions_router)
     _install_error_handling(app)
     app.openapi = lambda: _openapi(app)  # type: ignore[method-assign]
     return app
@@ -163,9 +166,11 @@ def _openapi(app: FastAPI) -> dict[str, Any]:
     )
     components = schema.setdefault("components", {})
     schemas = components.setdefault("schemas", {})
-    submission = EventSubmission.model_json_schema(ref_template="#/components/schemas/{model}")
-    schemas.update(submission.pop("$defs", {}))
-    schemas["EventSubmission"] = submission
+    # Request bodies are read explicitly after authorization, so their schemas are added here.
+    for model in (EventSubmission, RedactionRequest):
+        body_schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
+        schemas.update(body_schema.pop("$defs", {}))
+        schemas[model.__name__] = body_schema
     components["securitySchemes"] = {"bearerAuth": {"type": "http", "scheme": "bearer"}}
 
     # Every documented operation is an authenticated /audit operation.

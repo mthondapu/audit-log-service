@@ -109,7 +109,8 @@ def first(result: VerificationResult) -> tuple[ViolationType, int] | None:
     return None if violation is None else (violation.type, violation.sequence)
 
 
-def test_violation_types_are_the_approved_phase_3_set_in_precedence_order() -> None:
+def test_violation_types_are_the_approved_set_in_precedence_order() -> None:
+    # Phase 3 precedence, with PAYLOAD_VALUE_MISSING after PAYLOAD_VALUE_MISMATCH (Phase 8).
     assert list(ViolationType) == [
         "SEQUENCE_DUPLICATE",
         "SEQUENCE_GAP",
@@ -117,6 +118,7 @@ def test_violation_types_are_the_approved_phase_3_set_in_precedence_order() -> N
         "PREVIOUS_HASH_MISMATCH",
         "CONTENT_HASH_MISMATCH",
         "PAYLOAD_VALUE_MISMATCH",
+        "PAYLOAD_VALUE_MISSING",
         "RECORD_HASH_MISMATCH",
         "RECORDED_AT_REGRESSION",
     ]

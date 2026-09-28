@@ -1735,3 +1735,145 @@ measured under NFR-3. The `httpx2` warning noted in Phase 5 remains.
 
 **Sign-off:** I gave the D1–D6 decisions, the correction, and the follow-up fix decision recorded above. My review
 and sign-off of the Phase 7 implementation are pending.
+
+### 2026-09-28 — Phase 8: redaction
+
+**Date/Time:** 2026-09-28, from 20:24 UTC (from session timestamps: Phase 8 planning requested at 20:24;
+implementation decisions approved at 20:28).
+
+**Activity:** Developer-led, AI-assisted planning and implementation of FR-6 redaction, including the verifier's
+`PAYLOAD_VALUE_MISSING` check and the derived `redactedPaths`.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude produced a read-only Phase 8 plan. It recommended FR-6 as the next area: its
+dependencies were built, it had the fewest open decisions, and retention and export build on its system-event and
+missing-value foundations. It also identified three documentation inconsistencies:
+
+- the FR-6 list of non-redactable events versus FR-1 and architecture §9;
+- the architecture §9 check order versus D4;
+- `413` and `415`, which FR-6 did not list.
+
+**Previously approved requirements:** FR-6 (the commitment model, JSON Pointer addressing, the redaction event,
+atomicity, partial and repeated redaction, the reason rules, HTTP statuses, and the `events:redact` capability), FR-2
+(`null` rendering and `redactedPaths`), FR-3 (the missing-value authorization rule), and ADR-0004 and ADR-0009 (the
+`DELETE` grant on stored values).
+
+**My decisions:**
+
+- FR-6 is Phase 8.
+- **`PAYLOAD_VALUE_MISSING`:** placed immediately after `PAYLOAD_VALUE_MISMATCH`, with the exact message "A payload
+  value is missing without an authorizing redaction or retention event."
+- **The redaction event:** `AUDIT_LOG_REDACTION`, with payload `{targetId, paths (sorted, actually redacted),
+  reason}`, `timestamp` null, identity fields inherited from the target, and the operator as `recordedBy`.
+- **The body:** `{paths, reason}`, with 1–100 pointers and a reason of 1–1000 characters that is not whitespace
+  only and is stored exactly. The 64 KiB limit, `413`, and `415` apply.
+- **Pointers:** RFC 6901, including the root pointer `""`; a container pointer covers everything beneath it.
+- **Check order:** the D4 order (body, lookup, system or archived target, pointer resolution, nothing new).
+- **Non-redactable targets:** every `AUDIT_LOG_` event.
+- **Authorization:** `events:redact` only.
+- **Transaction and representation:** one atomic transaction under the append lock; redacted values render as
+  `null`, with `redactedPaths`.
+- **Verification:** authorization by a later valid redaction only; retention authorization is not implemented.
+
+**What the AI implemented:**
+
+- `integrity/commitments.py`: `committed_pointers` and `reveal_payload`, which rebuilds a payload with `null` for
+  missing values and returns their sorted pointers.
+- `integrity/verification.py`:
+  - `PAYLOAD_VALUE_MISSING` added to the enum at its approved position, and a `REDACTION_EVENT_TYPE` constant;
+  - `verify_chain` now runs two passes: the unchanged per-record checks, then a missing-value check at the approved
+    precedence;
+  - a redaction event authorizes only if it has no violation and no missing value of its own, is later than its
+    target, names the target, and lists the exact pointer.
+
+  Hashing, canonicalization, and commitments are unchanged.
+- `persistence/audit_log.py`:
+  - `acquire_append_lock`, extracted from `append_event` with the same statements;
+  - `delete_payload_values`, which deletes only from `audit_payload_values`.
+- `application/redactions.py`: request validation and `redact`, which, in the caller's transaction, takes the lock,
+  looks up the target, applies the `409` rules, resolves the pointers, deletes the covered values, and appends the
+  redaction event through `append_event`.
+- `application/events.py`: the schema-error formatter became a shared, behavior-neutral `describe_schema_errors`.
+- `api/redactions.py`: the route in the D4 order.
+- `api/schemas.py`: `represent` now derives `null` rendering and `redactedPaths` for every endpoint.
+- `api/app.py`: registers the router and adds the `RedactionRequest` schema to OpenAPI.
+- `application/verification.py`: the approved message.
+
+**Implementation interpretations** (for my review):
+
+- The redaction event's `paths` are the leaf pointers of the values actually deleted, so authorization matches exact
+  pointers.
+- A redaction event with any missing value of its own never authorizes, because system events cannot be redacted.
+- No record can be archived before retention exists, so the archived-target rule is documented but has nothing to
+  reject; it is left for FR-5.
+
+**Existing tests updated:**
+
+- The Phase 3 and Phase 7 violation-type and message tests now cover the nine approved types.
+- The Phase 7 test that pinned "a deleted payload value is not detected" now expects `PAYLOAD_VALUE_MISSING`.
+- A Phase 7 regression fixture now uses an empty payload, so its only violation is the regression.
+- The Phase 4 guard test now forbids `update` anywhere and allows `delete` only on `audit_payload_values`, as
+  ADR-0009 grants.
+- The OpenAPI tests include the new operation.
+
+**New tests (87; 875 in total):**
+
+- **Unit (49):**
+  - verification of missing values (17): unauthorized, authorized, pointer-exact, accumulated, earlier-than-target,
+    other target, non-reserved event type, tampered event, event with a missing value, five malformed payloads,
+    precedence both ways, and a Hypothesis property that any sequence of valid redactions keeps the chain intact;
+  - request validation (28);
+  - the reveal helpers (2);
+  - OpenAPI (1);
+  - the ninth message case (1).
+- **API integration against real PostgreSQL (38):**
+  - one leaf; multiple pointers; a container; the root;
+  - partial redaction, and nothing-new `409`; an empty container;
+  - invalid and nonexistent pointers, including below-a-value, out-of-range, leading-zero, and `-`;
+  - invalid bodies, and `400`, `413`, `415`, and duplicate keys;
+  - `404` for unknown and non-UUID identifiers;
+  - check order;
+  - system-event `409`;
+  - no echo of submitted values;
+  - `403` for the writer, auditor, and regulator, and `401` before validation;
+  - rollback after a failure;
+  - chain intact, and the remaining values still verifying;
+  - an unauthorized deletion → `PAYLOAD_VALUE_MISSING`; authorization limited to the removed values; a tampered
+    redaction event not authorizing;
+  - consistent representation across `GET` and the query endpoint;
+  - concurrent redactions of the same value and of different values;
+  - a Hypothesis property over redaction sequences through the API;
+  - `503` when the database is unreachable.
+
+**Documentation updates:**
+
+- `requirements.md`:
+  - FR-3: the precedence, the message table, the authorization rule, and the limitations;
+  - FR-6: an API-definition note with the decisions.
+- `architecture.md`: §5, §9 (the D4 check order and verification).
+- ADR-0002 and ADR-0004: the precedence and verification notes.
+- `README.md`: the endpoint, and operator guidance that a reason must never contain the redacted value.
+
+**Limitations:**
+
+- No retention authorization, and no archived-target rejection, until FR-5.
+- Payload keys and structure remain visible after redaction, as already documented.
+- The `httpx2` warning remains.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `pytest --cov` reported 875 passed (605 unit, 269 integration, and 1 package test), with 100% statement and branch
+  coverage and no exclusions.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the Phase 8 decisions recorded above. My review and sign-off of the Phase 8 implementation are
+pending.

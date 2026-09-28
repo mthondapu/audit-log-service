@@ -63,7 +63,8 @@ def parse_submission(document: object) -> EventSubmission:
     try:
         return EventSubmission.model_validate(document)
     except ValidationError as error:
-        raise SubmissionError(_describe(error)) from None
+        known = set(EventSubmission.model_fields) | SERVER_ASSIGNED_FIELDS
+        raise SubmissionError(describe_schema_errors(error, known)) from None
 
 
 def prepare_event(
@@ -197,9 +198,8 @@ def is_storable_text(text: str) -> bool:
     return True
 
 
-def _describe(error: ValidationError) -> str:
+def describe_schema_errors(error: ValidationError, known: set[str]) -> str:
     """Describe schema errors by known field name and message only, never by input value."""
-    known = set(EventSubmission.model_fields) | SERVER_ASSIGNED_FIELDS
     problems: list[str] = []
     for detail in error.errors(include_url=False, include_input=False, include_context=False):
         location = [str(part) for part in detail["loc"]]

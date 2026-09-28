@@ -33,6 +33,7 @@ from sqlalchemy import (
     Text,
     and_,
     cast,
+    delete,
     func,
     insert,
     select,
@@ -86,8 +87,7 @@ def append_event(connection: Connection, event: NewEvent) -> AuditRecord:
     committed = commit_payload(event.payload)
     record_id = uuid.uuid4()
 
-    connection.execute(_SET_LOCK_TIMEOUT)
-    connection.execute(select(func.pg_advisory_xact_lock(APPEND_LOCK_KEY)))
+    acquire_append_lock(connection)
 
     head = connection.execute(
         select(audit_records.c.sequence, audit_records.c.record_hash, audit_records.c.recorded_at)
@@ -137,6 +137,30 @@ def append_event(connection: Connection, event: NewEvent) -> AuditRecord:
     )
     _insert_payload_values(connection, record_id, committed.values)
     return record
+
+
+def acquire_append_lock(connection: Connection) -> None:
+    """Take the append lock for the rest of the caller's transaction (re-entrant within it).
+
+    Operations that must read and change chain state consistently, such as redaction, take it
+    before reading; `append_event` takes it again, which PostgreSQL allows in one transaction.
+    """
+    _require_transaction(connection)
+    connection.execute(_SET_LOCK_TIMEOUT)
+    connection.execute(select(func.pg_advisory_xact_lock(APPEND_LOCK_KEY)))
+
+
+def delete_payload_values(
+    connection: Connection, record_id: uuid.UUID, pointers: Sequence[str]
+) -> int:
+    """Delete recoverable values and their salts (redaction, FR-6). Records are never changed."""
+    result = connection.execute(
+        delete(audit_payload_values).where(
+            audit_payload_values.c.record_id == record_id,
+            audit_payload_values.c.pointer.in_(pointers),
+        )
+    )
+    return result.rowcount
 
 
 def load_chain_entries(connection: Connection) -> list[ChainEntry]:

@@ -31,6 +31,7 @@ def _report(result: VerificationResult) -> dict[str, object]:
 
 
 def test_messages_cover_exactly_the_approved_violation_types() -> None:
+    # The eight Phase 7 types plus PAYLOAD_VALUE_MISSING (Phase 8).
     assert set(VIOLATION_MESSAGES) == set(ViolationType)
     assert {t.value for t in VIOLATION_MESSAGES} == {
         "SEQUENCE_DUPLICATE",
@@ -39,6 +40,7 @@ def test_messages_cover_exactly_the_approved_violation_types() -> None:
         "PREVIOUS_HASH_MISMATCH",
         "CONTENT_HASH_MISMATCH",
         "PAYLOAD_VALUE_MISMATCH",
+        "PAYLOAD_VALUE_MISSING",
         "RECORD_HASH_MISMATCH",
         "RECORDED_AT_REGRESSION",
     }
@@ -60,6 +62,9 @@ def test_messages_are_the_approved_wording() -> None:
         ViolationType.CONTENT_HASH_MISMATCH: "The record's content does not match its contentHash.",
         ViolationType.PAYLOAD_VALUE_MISMATCH: (
             "A stored payload value does not match its commitment."
+        ),
+        ViolationType.PAYLOAD_VALUE_MISSING: (
+            "A payload value is missing without an authorizing redaction or retention event."
         ),
         ViolationType.RECORD_HASH_MISMATCH: (
             "The record's recordHash does not match its sequence, previousHash, and contentHash."

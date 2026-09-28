@@ -3,11 +3,11 @@
 `verifiedAt` is the database clock (`clock_timestamp()`), read once at the start of verification
 and written in the canonical timestamp form. The chain is loaded in one REPEATABLE READ, READ ONLY
 transaction, so every record and payload value comes from a single snapshot; nothing is locked or
-written. The unchanged integrity core (`verify_chain`) does all checking.
+written. The integrity core (`verify_chain`) does all checking.
 
-Not detected until later phases: deleted payload values (`PAYLOAD_VALUE_MISSING`, with retention
-and redaction), and truncation or a consistent full rewrite (`CHAIN_TRUNCATED`, `ANCHOR_MISMATCH`,
-with checkpoints).
+Not detected until later phases: truncation or a consistent full rewrite (`CHAIN_TRUNCATED`,
+`ANCHOR_MISMATCH`, with checkpoints). Missing payload values are reported unless a redaction event
+authorizes them; authorization by retention comes with retention.
 """
 
 from collections.abc import Mapping
@@ -24,7 +24,8 @@ from audit_log_service.integrity.verification import (
 )
 from audit_log_service.persistence.audit_log import load_chain_entries
 
-# Fixed per violation type, never derived from record data (FR-3). Approved wording (D3).
+# Fixed per violation type, never derived from record data (FR-3). Approved wording (Phase 7 D3;
+# PAYLOAD_VALUE_MISSING in Phase 8).
 VIOLATION_MESSAGES: Mapping[ViolationType, str] = MappingProxyType(
     {
         ViolationType.SEQUENCE_DUPLICATE: (
@@ -41,6 +42,9 @@ VIOLATION_MESSAGES: Mapping[ViolationType, str] = MappingProxyType(
         ViolationType.CONTENT_HASH_MISMATCH: "The record's content does not match its contentHash.",
         ViolationType.PAYLOAD_VALUE_MISMATCH: (
             "A stored payload value does not match its commitment."
+        ),
+        ViolationType.PAYLOAD_VALUE_MISSING: (
+            "A payload value is missing without an authorizing redaction or retention event."
         ),
         ViolationType.RECORD_HASH_MISMATCH: (
             "The record's recordHash does not match its sequence, previousHash, and contentHash."

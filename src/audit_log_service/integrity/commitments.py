@@ -105,8 +105,8 @@ def values_open_commitments(
 ) -> bool:
     """Whether every present value opens the commitment at its pointer.
 
-    Only present values are checked. Whether a missing value is authorized depends on retention
-    and redaction evidence, which is deferred (requirements FR-3, `PAYLOAD_VALUE_MISSING`).
+    Only present values are checked here. Missing values are checked by the verifier, which
+    decides whether a redaction event authorizes them (requirements FR-3, `PAYLOAD_VALUE_MISSING`).
     """
     commitments = dict(_leaves(structure))
     for pointer, stored in values.items():
@@ -120,6 +120,45 @@ def values_open_commitments(
         if not hmac.compare_digest(actual, str(expected)):
             return False
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class RevealedPayload:
+    """A payload rebuilt from its committed structure and the values still stored.
+
+    Values that are no longer stored are `None` in `payload` and listed, sorted, in `missing`.
+    """
+
+    payload: dict[str, JsonValue] = field(repr=False)
+    missing: list[str]
+
+
+def committed_pointers(structure: Mapping[str, JsonValue]) -> list[str]:
+    """The JSON Pointers of every committed value (scalar leaf) in a committed structure."""
+    return [pointer for pointer, _ in _leaves(structure)]
+
+
+def reveal_payload(
+    structure: Mapping[str, JsonValue], values: Mapping[str, PayloadValue]
+) -> RevealedPayload:
+    """Rebuild the payload, with `None` for each value that is no longer stored."""
+    missing: list[str] = []
+
+    def rebuild(node: object, pointer: str) -> JsonValue:
+        if isinstance(node, dict):
+            items = cast(dict[str, object], node).items()
+            return {key: rebuild(item, f"{pointer}/{_escape(key)}") for key, item in items}
+        if isinstance(node, list):
+            elements = cast(list[object], node)
+            return [rebuild(item, f"{pointer}/{index}") for index, item in enumerate(elements)]
+        stored = values.get(pointer)
+        if stored is None:
+            missing.append(pointer)
+            return None
+        return _parse_value_text(stored.canonical_text)
+
+    payload = {key: rebuild(item, f"/{_escape(key)}") for key, item in structure.items()}
+    return RevealedPayload(payload=payload, missing=sorted(missing))
 
 
 def _leaves(node: object, pointer: str = "") -> Iterator[tuple[str, object]]:

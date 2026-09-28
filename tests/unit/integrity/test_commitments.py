@@ -19,8 +19,10 @@ from audit_log_service.integrity.commitments import (
     SALT_BYTES,
     PayloadValue,
     commit_payload,
+    committed_pointers,
     compute_commitment,
     generate_salt,
+    reveal_payload,
     values_open_commitments,
 )
 from audit_log_service.integrity.errors import IntegrityInputError
@@ -245,3 +247,22 @@ def test_repr_does_not_expose_values_or_salts() -> None:
     for text in (repr(committed), repr(stored)):
         assert "4111-secret" not in text
         assert stored.salt not in text
+
+
+def test_committed_pointers_lists_every_committed_value() -> None:
+    committed = commit_payload({"a": 1, "b": [True, {"c": None}], "d": {}, "e/f": []})
+    assert sorted(committed_pointers(committed.structure)) == sorted(committed.values)
+
+
+def test_reveal_rebuilds_the_payload_and_reports_missing_values() -> None:
+    payload: dict[str, JsonValue] = {"card": "4111", "items": [1, {"sku": "A"}], "empty": {}}
+    committed = commit_payload(payload)
+
+    complete = reveal_payload(committed.structure, committed.values)
+    remaining = {p: v for p, v in committed.values.items() if p not in {"/card", "/items/1/sku"}}
+    partial = reveal_payload(committed.structure, remaining)
+
+    assert (complete.payload, complete.missing) == (payload, [])
+    assert partial.payload == {"card": None, "items": [1, {"sku": None}], "empty": {}}
+    assert partial.missing == ["/card", "/items/1/sku"]
+    assert "4111" not in repr(complete)

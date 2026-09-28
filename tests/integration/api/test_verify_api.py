@@ -327,8 +327,12 @@ def test_recorded_at_regression_is_detected(
     verify: Verify, seed: Seed, owner_engine: Engine, insert_sealed: Any
 ) -> None:
     records = seed(2)
+    # An empty payload, so the regression is the forged record's only violation.
     earlier = dataclasses.replace(
-        records[1].content, id=str(uuid.uuid4()), recorded_at="2000-01-01T00:00:00.000000Z"
+        records[1].content,
+        id=str(uuid.uuid4()),
+        recorded_at="2000-01-01T00:00:00.000000Z",
+        payload={},
     )
     with owner_engine.begin() as connection:
         insert_sealed(connection, seal_record(earlier, 3, records[1].record_hash))
@@ -401,16 +405,17 @@ def test_tail_truncation_is_not_detected_before_checkpoints(
     assert verify()["intact"] is True
 
 
-def test_deleted_payload_value_is_not_detected_before_redaction(
+def test_deleted_payload_value_is_payload_value_missing(
     verify: Verify, seed: Seed, owner_engine: Engine
 ) -> None:
+    # Detected since Phase 8: only a later redaction event can authorize a missing value.
     records = seed(2)
     _tamper(
         owner_engine,
         "DELETE FROM audit_payload_values WHERE record_id = :id",
         id=uuid.UUID(records[0].content.id),
     )
-    assert verify()["intact"] is True
+    assert _first(verify()) == ("PAYLOAD_VALUE_MISSING", 1)
 
 
 def test_consistent_full_rewrite_is_not_detected_before_checkpoints(

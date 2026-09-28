@@ -99,7 +99,9 @@ def test_guard_is_scoped_to_the_application_role(append: Append, owner_engine: E
     assert updated == 1
 
 
-def test_persistence_package_issues_no_update_or_delete() -> None:
+def test_persistence_package_never_updates_and_deletes_only_payload_values() -> None:
+    # ADR-0009: records are never updated or deleted. Redaction (FR-6) deletes only recoverable
+    # payload values and their salts, which the application role is granted.
     package_dir = Path(persistence_package.__file__).parent
     for source in package_dir.glob("*.py"):
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -111,6 +113,13 @@ def test_persistence_package_issues_no_update_or_delete() -> None:
             if isinstance(node, ast.ImportFrom)
             for alias in node.names
         }
+        delete_targets = [
+            ast.unparse(node.args[0])
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "delete"
+        ]
         raw_sql = [
             node.args[0].value.upper()
             for node in ast.walk(tree)
@@ -121,5 +130,6 @@ def test_persistence_package_issues_no_update_or_delete() -> None:
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
         ]
-        assert not {"update", "delete"} & used, source.name
+        assert "update" not in used, source.name
+        assert all(target == "audit_payload_values" for target in delete_targets), source.name
         assert not [sql for sql in raw_sql if "UPDATE" in sql or "DELETE" in sql], source.name
