@@ -32,9 +32,9 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 
 | # | Requirement / Decision | Source | Rationale |
 |---|---|---|---|
-| 1 | Each audit event shall have a server-recorded `recordedAt` timestamp. The assignment's `timestamp` field is represented by the optional caller-supplied `occurredAt`; the server always assigns the authoritative `recordedAt`. | Assignment + Developer-derived | Separates business occurrence time from authoritative recording time. |
-| 2 | Timestamps shall use an unambiguous UTC representation and shall be immutable once recorded. | Developer-derived | Provides consistent querying, retention, and integrity behavior. |
-| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional `occurredAt`, and server-assigned `recordedAt`. | Assignment + Developer-derived | Uses the assignment's event terminology and provides a predictable audit contract. |
+| 1 | The assignment's `timestamp` field shall be the optional, caller-supplied time at which the event occurred; if omitted, it is stored as null. The server always assigns the authoritative `recordedAt` recording time. | Assignment + Developer-derived | Keeps the assignment's field name while separating business occurrence time from authoritative recording time. |
+| 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. `recordedAt` shall be normalized to UTC. Timestamps shall be immutable once recorded. Whether the caller-supplied `timestamp` is stored normalized to UTC or with its original offset is deferred to the integrity design. | Developer-derived | Avoids ambiguous local times and provides consistent querying, retention, and integrity behavior. |
+| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
 | 4 | `payload` shall contain structured JSON data. | Developer-derived | Supports structured querying, redaction, validation, and deterministic integrity processing. |
 | 5 | The audit history shall have a defined logical ordering, and concurrent appends shall preserve that ordering without conflicting chain histories. | Assignment + Developer-derived | Required for a reliable append-only integrity model. |
 | 6 | Each audit record shall contain its own content/integrity hash, a link to the preceding record, and a defined genesis value for the first record. | Assignment | Establishes the hash-chain structure and its starting point. |
@@ -47,6 +47,7 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 | 13 | An exported audit bundle shall contain sufficient integrity evidence to be independently verified without trusting the live service. | Developer-derived | Provides evidence that can be validated outside the running service. |
 | 14 | Duplicate-write idempotency is not required for the initial version. | Developer-derived | Keeps the initial implementation focused; duplicate events remain part of the audit history. |
 | 15 | Full-history verification is required for the initial version. More advanced checkpoint/range verification may be considered during design if justified. | Assignment + Developer-derived | Establishes a correctness-first baseline. |
+| 16 | A caller-supplied `timestamp` more than a configurable allowed skew (default 5 minutes) ahead of `recordedAt` shall be rejected. No lower bound is imposed. | Developer-derived | Catches clearly erroneous future times from writing services while accepting valid late-arriving historical events. |
 
 ## 4. Functional Requirements
 
@@ -54,7 +55,20 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 
 The service shall provide an API to append a new audit event.
 
-A successful append shall return sufficient information for the caller to identify the recorded event and its integrity position.
+A successful append shall return sufficient information for the caller to identify the recorded event and its integrity position. The response shall contain the full stored record, including `id` and `sequence`, and shall reference the record's location (`GET /audit/events/{id}`).
+
+The server shall assign `recordedBy` from the authenticated caller. The authentication mechanism and `recordedBy` format are deferred to the security design; whether `recordedBy` participates in the integrity hash is deferred to the integrity design.
+
+Append requests shall be validated and bounded:
+
+- `eventType` and `resourceType` shall match a documented pattern;
+- `actorId` and `resourceId` shall have bounded lengths;
+- `payload` shall be a JSON object with bounded size and nesting depth;
+- the overall request size shall be bounded;
+- duplicate JSON keys shall be rejected; and
+- unknown fields, including attempts to supply server-assigned fields, shall be rejected with `422`.
+
+Exact limits and patterns are implementation constraints documented with the API definition rather than in this baseline.
 
 The normal API shall not provide an operation for arbitrary modification or deletion of an existing audit event.
 
@@ -70,19 +84,35 @@ Queries shall support filtering by:
 - `eventType`;
 - `resourceType`;
 - `resourceId`; and
-- time range.
+- time range (`from` / `to`).
 
-The time-range filter shall use the authoritative server-recorded timestamp (`recordedAt`).
+Filters are independent and shall be combined with AND semantics. Resource identifiers are scoped by resource type; a `resourceId` filter used without `resourceType` matches that identifier across all resource types.
 
-The API shall support pagination for potentially large result sets.
+The time-range filter shall use only the authoritative server-recorded timestamp (`recordedAt`), not the caller-supplied `timestamp`. The range is half-open: `from <= recordedAt < to`.
 
-The pagination mechanism shall be selected during architecture design based on consistency and performance requirements.
+The API shall support pagination for potentially large result sets using opaque cursor pagination:
+
+- the default page size is 50 and the maximum is 200;
+- a requested page size outside the allowed range shall be rejected with `422`; and
+- no total result count is provided.
+
+Results shall be returned in deterministic ascending chain `sequence` order. No client-controlled sort parameter is provided.
+
+Unknown query parameters shall be rejected with `422`, because silently ignoring an unrecognized filter could return a broader result than the caller intended.
+
+The service shall also provide `GET /audit/events/{id}` to retrieve a single audit record by its identifier.
+
+Whether and how archived or redacted records appear in query results is deferred to the retention and redaction design. How `sequence` is assigned under concurrent appends is deferred to the concurrency design.
 
 ### FR-3 — Verify Audit History
 
 The service shall provide:
 
 `GET /audit/verify`
+
+The verification endpoint shall require authentication and authorization.
+
+A verification request that executes successfully shall return `200`, with the verification result in the response body whether the chain is intact or broken. A detected integrity violation is a verification result, not an HTTP error. The exact response structure is deferred to the integrity design.
 
 The verification response shall provide:
 
@@ -185,7 +215,9 @@ At minimum:
 - application credentials shall have only the database privileges required by the application;
 - privileged operational actions shall require appropriate authorization;
 - secrets and cryptographic private keys shall not be committed to source control;
-- sensitive values shall not unnecessarily appear in application logs; and
+- sensitive values shall not unnecessarily appear in application logs;
+- error responses, including validation errors, shall not echo submitted input or payload values;
+- potentially identifying query-string values (such as `actorId` and `resourceId`) shall not be written to operational logs; and
 - dependency and security checks shall be included in the quality process where practical.
 
 Authorization controls are developer-derived engineering requirements supporting the assignment's security and Scenario C objectives.
@@ -243,6 +275,20 @@ The implementation shall include quality gates covering, as appropriate:
 
 Coverage shall be meaningful and risk-based rather than treated as the sole measure of test quality.
 
+### NFR-7 — API Contract Conventions
+
+The API shall follow established HTTP/REST conventions. These are engineering conventions adopted by the developer, not assignment requirements or new functional behavior:
+
+- REST-style resource naming under `/audit`, retaining the assignment-defined `/audit/verify` path;
+- standard HTTP methods and status codes; update and delete methods are not provided for audit records;
+- `201 Created` with a `Location` header for a successful append;
+- RFC 9457 Problem Details (`application/problem+json`) for all error responses, including a request identifier where appropriate;
+- camelCase JSON field and query-parameter names, consistent with the assignment's field names;
+- consistent request and response schemas; and
+- OpenAPI documentation as the API and schema definition.
+
+`POST` requests are not idempotent: because duplicate-write idempotency is not required (§3 #14), a client retry may record a duplicate event.
+
 ## 6. Assumptions
 
 1. The initial implementation uses a single logical audit history rather than multiple independent tenant chains.
@@ -252,6 +298,7 @@ Coverage shall be meaningful and risk-based rather than treated as the sole meas
 5. Production authentication and authorization would integrate with an organizational identity provider or equivalent mechanism.
 6. The initial implementation does not provide client-side idempotency keys for retry deduplication.
 7. The final implementation will document prototype limitations where behavior is intentionally narrower than a production deployment.
+8. Authenticated writing services are trusted to assert the business `actorId`; the server-assigned `recordedBy` records which technical caller submitted each event.
 
 ## 7. Out of Scope
 
@@ -365,6 +412,7 @@ The implementation shall demonstrate the clarified interpretation of regulatory 
 | Privileged database access may bypass application controls | Unauthorized modification of audit records | Enforce least privilege and test direct datastore tampering |
 | Prototype security assumptions may differ from production | Production deployment may require additional controls | Explicitly document authentication, key management, scaling, and deployment limitations |
 | No external timestamping authority in prototype | Complete rewrite detection may depend on the chosen trust boundary | Explicitly document attacker model, trust assumptions, and limitations |
+| A writing service can assert an arbitrary `actorId` | Misleading audit evidence about who caused an event | Record the authenticated technical caller in server-assigned `recordedBy` |
 
 ## 11. Traceability
 
@@ -387,7 +435,8 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 | Area | Required Evidence |
 |---|---|
 | Append-only audit history | Successful append tests and direct datastore tampering demonstration |
-| Query | API tests covering filters and pagination |
+| Query | API tests covering combined filters, half-open time ranges, cursor pagination, page-size bounds, ascending sequence order, and rejection of unknown parameters |
+| API contract | API tests covering input validation, unknown-field rejection, Problem Details error format, absence of echoed input values, and status codes |
 | Hash-chain integrity | Unit/integration/property tests and verification scenarios |
 | Concurrent writes | Concurrency tests demonstrating a consistent chain |
 | Rewrite/tamper detection | Controlled datastore modification and verification demonstration |
