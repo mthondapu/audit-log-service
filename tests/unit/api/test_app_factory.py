@@ -11,6 +11,8 @@ from audit_log_service.api.app import CONNECT_TIMEOUT_SECONDS, create_app
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import (
     API_KEYS_FILE_VARIABLE,
+    CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE,
+    CHECKPOINT_STORE_DIR_VARIABLE,
     DATABASE_URL_VARIABLE,
     VOCABULARY_FILE_VARIABLE,
 )
@@ -24,12 +26,16 @@ def environment(
     monkeypatch: pytest.MonkeyPatch,
     write_file: Callable[[str, str], Path],
     valid_api_key_toml: str,
+    checkpoint_store: Path,
+    checkpoint_public_key_file: Path,
 ) -> None:
     monkeypatch.setenv(DATABASE_URL_VARIABLE, DATABASE_URL)
     monkeypatch.setenv(API_KEYS_FILE_VARIABLE, str(write_file("keys.toml", valid_api_key_toml)))
     monkeypatch.setenv(
         VOCABULARY_FILE_VARIABLE, str(CONFIG_DIR / "client-account-vocabulary.example.toml")
     )
+    monkeypatch.setenv(CHECKPOINT_STORE_DIR_VARIABLE, str(checkpoint_store))
+    monkeypatch.setenv(CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE, str(checkpoint_public_key_file))
 
 
 @pytest.mark.usefixtures("environment")

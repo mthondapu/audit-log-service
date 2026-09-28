@@ -7,7 +7,8 @@ suite fails, rather than being skipped, when it is not set.
 Per session, the harness provisions the group role, creates a throwaway database, and migrates it
 with Alembic. Each test starts from empty tables. Application-path tests connect as the owner and
 switch to `audit_log_app` with `SET ROLE`, so every append runs with the application's privileges
-and no application password is needed.
+and no application password is needed. Checkpoint CLI tests switch to `audit_log_checkpoint` the
+same way.
 """
 
 import os
@@ -26,7 +27,7 @@ from audit_log_service.integrity.hashing import AuditRecord
 from audit_log_service.integrity.timestamps import parse_timestamp
 from audit_log_service.integrity.verification import ChainEntry
 from audit_log_service.persistence.audit_log import NewEvent, append_event, load_chain_entries
-from audit_log_service.persistence.schema import APPLICATION_ROLE, audit_records
+from audit_log_service.persistence.schema import APPLICATION_ROLE, CHECKPOINT_ROLE, audit_records
 
 TEST_URL_VARIABLE = "AUDIT_LOG_TEST_DATABASE_URL"
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +108,20 @@ def app_engine(database_url: URL) -> Iterator[Engine]:
     @event.listens_for(engine, "connect")
     def use_application_role(dbapi_connection: Any, _record: Any) -> None:  # pyright: ignore[reportUnusedFunction]
         dbapi_connection.execute(f"SET ROLE {APPLICATION_ROLE}")
+        dbapi_connection.commit()
+
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def checkpoint_engine(database_url: URL) -> Iterator[Engine]:
+    """Connections with the checkpoint CLI's read-only role (migration 0002)."""
+    engine = create_engine(database_url)
+
+    @event.listens_for(engine, "connect")
+    def use_checkpoint_role(dbapi_connection: Any, _record: Any) -> None:  # pyright: ignore[reportUnusedFunction]
+        dbapi_connection.execute(f"SET ROLE {CHECKPOINT_ROLE}")
         dbapi_connection.commit()
 
     yield engine

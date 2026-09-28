@@ -4,7 +4,8 @@ Run with: ``uvicorn audit_log_service.api.app:create_app --factory``.
 
 Settings are loaded once, when the app is created, and fail fast (D2). At startup the service also
 confirms that its database login has no UPDATE, DELETE, or TRUNCATE privilege on audit records, so
-it cannot run as the owner or another privileged role (ADR-0009).
+it cannot run as the owner or another privileged role (ADR-0009). The service reads the checkpoint
+store with the trusted public key and has no code path that writes it (FR-4).
 
 Every response carries a server-generated `X-Request-ID`; an incoming one is ignored (D3). Every
 error is RFC 9457 Problem Details with that `requestId`. Logs record request identifiers, methods,
@@ -36,11 +37,13 @@ from audit_log_service.application.events import EventSubmission
 from audit_log_service.application.redactions import RedactionRequest
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import DATABASE_URL_VARIABLE, Settings, load_settings
+from audit_log_service.persistence.checkpoint_store import CheckpointStoreError
 from audit_log_service.problem_details import problem
 
 logger = logging.getLogger("audit_log_service.api")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+CHECKPOINT_STORE_ERROR_DETAIL = "The checkpoint store is invalid or unreadable."
 CONNECT_TIMEOUT_SECONDS = 5
 _FORBIDDEN_PRIVILEGES = ("UPDATE", "DELETE", "TRUNCATE")
 
@@ -145,6 +148,17 @@ def _install_error_handling(app: FastAPI) -> None:
         return problem_json(
             problem(503, "The service is temporarily unavailable.", request_id_of(request))
         )
+
+    @app.exception_handler(CheckpointStoreError)
+    async def checkpoint_store_invalid(request: Request, error: CheckpointStoreError) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # Fail closed: nothing in the store is trusted. The log names the file, never its content.
+        logger.error(
+            "checkpoint store invalid request_id=%s path=%s file=%s",
+            request_id_of(request),
+            request.url.path,
+            error.file_name,
+        )
+        return problem_json(problem(500, CHECKPOINT_STORE_ERROR_DETAIL, request_id_of(request)))
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, error: StarletteHTTPException) -> Response:  # pyright: ignore[reportUnusedFunction]

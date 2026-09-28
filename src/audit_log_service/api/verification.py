@@ -2,6 +2,8 @@
 
 The D4 order: authenticate, authorize `chain:verify`, validate (the endpoint takes no query
 parameters), then verify. A broken chain is a verification result with 200, not an HTTP error.
+The chain is compared with the latest checkpoint in the store (FR-4); an invalid or unreadable
+store is a 500 Problem Details response, handled in `app` (Phase 10 decision CP8).
 """
 
 from typing import Any
@@ -28,6 +30,7 @@ router = APIRouter()
         200: {"description": "The verification result, whether or not the chain is intact"},
         422: {**PROBLEM, "description": "The request has a query parameter"},
         **AUTH_RESPONSES,
+        500: {**PROBLEM, "description": "The checkpoint store is invalid or unreadable"},
     },
 )
 async def verify_chain_route(request: Request) -> JSONResponse:
@@ -38,6 +41,12 @@ async def verify_chain_route(request: Request) -> JSONResponse:
                 422, "the verification endpoint accepts no query parameters", request_id_of(request)
             )
         )
-    verification = await run_in_threadpool(verify_audit_chain, request.app.state.engine)
+    settings = app_settings(request)
+    verification = await run_in_threadpool(
+        verify_audit_chain,
+        request.app.state.engine,
+        settings.checkpoint_store_dir,
+        settings.checkpoint_public_key,
+    )
     body: dict[str, Any] = represent_verification(verification)
     return JSONResponse(body)

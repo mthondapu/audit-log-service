@@ -10,7 +10,11 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from audit_log_service.config.api_keys import ApiKeyConfiguration, ConfiguredPrincipal
-from audit_log_service.security.authentication import AuthenticationError, authenticate
+from audit_log_service.security.authentication import (
+    AuthenticationError,
+    authenticate,
+    authenticate_api_key,
+)
 from audit_log_service.security.capabilities import ROLE_CAPABILITIES, Capability, Role
 
 
@@ -171,3 +175,59 @@ def test_arbitrary_unconfigured_tokens_never_authenticate(token: str) -> None:
     assume(token not in (writer_key, admin_key))
     with pytest.raises(AuthenticationError):
         authenticate([f"Bearer {token}"], configuration)
+
+
+def test_raw_api_key_authenticates_the_same_principal(
+    api_key_configuration: ApiKeyConfiguration, fake_keys: Mapping[str, str]
+) -> None:
+    # The checkpoint CLI presents the raw key, not an Authorization header (CP3).
+    for name, principal_id in (("administrator", "ops.admin"), ("writer", "svc-writer")):
+        from_header = authenticate([f"Bearer {fake_keys[name]}"], api_key_configuration)
+        raw = authenticate_api_key(fake_keys[name], api_key_configuration)
+        assert raw == from_header
+        assert raw.id == principal_id
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "",
+        " ",
+        "Bearer test-only-administrator-key",
+        "test-only-administrator-key ",
+        " test-only-administrator-key",
+        "test-only-administrator-key\n",
+        "test-only\tkey",
+    ],
+    ids=["empty", "space", "with-scheme", "trailing-space", "leading-space", "newline", "tab"],
+)
+def test_raw_api_key_must_be_a_bare_token(
+    api_key_configuration: ApiKeyConfiguration, token: str
+) -> None:
+    with pytest.raises(AuthenticationError):
+        authenticate_api_key(token, api_key_configuration)
+
+
+def test_raw_api_key_with_an_unpaired_surrogate_fails_authentication(
+    api_key_configuration: ApiKeyConfiguration,
+) -> None:
+    with pytest.raises(AuthenticationError) as caught:
+        authenticate_api_key("key-" + chr(0xD800), api_key_configuration)
+    assert caught.value.__cause__ is None
+
+
+def test_raw_api_key_compares_against_every_configured_digest(
+    api_key_configuration: ApiKeyConfiguration,
+    fake_keys: Mapping[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+    real_compare = hmac.compare_digest
+
+    def counting_compare(left: bytes, right: bytes) -> bool:
+        calls.append(1)
+        return real_compare(left, right)
+
+    monkeypatch.setattr(hmac, "compare_digest", counting_compare)
+    authenticate_api_key(fake_keys["administrator"], api_key_configuration)
+    assert len(calls) == sum(len(p.key_digests) for p in api_key_configuration.principals)

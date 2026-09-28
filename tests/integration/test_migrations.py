@@ -9,7 +9,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import URL, Engine, create_engine, inspect, pool, text
 
-from audit_log_service.persistence.schema import APPLICATION_ROLE, metadata
+from audit_log_service.persistence.schema import APPLICATION_ROLE, CHECKPOINT_ROLE, metadata
 
 MIGRATION_URL_VARIABLE = "AUDIT_LOG_MIGRATION_DATABASE_URL"
 
@@ -113,7 +113,7 @@ def test_downgrade_is_refused_and_keeps_the_tables(
 
     with owner_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0001"
+    assert version == "0002"
     assert set(inspect(owner_engine).get_table_names()) >= {"audit_records", "audit_payload_values"}
 
 
@@ -153,4 +153,22 @@ def test_migration_refuses_to_run_without_the_provisioned_role(
             connection.execute(text(f"ALTER ROLE {hidden} RENAME TO {APPLICATION_ROLE}"))
     admin.dispose()
 
+    assert "audit_records" not in inspect(fresh_database).get_table_names()
+
+
+def test_migration_refuses_to_run_without_the_checkpoint_role(
+    server_url: URL, fresh_database: Engine, run_migrations: Callable[[Engine], None]
+) -> None:
+    admin = create_engine(server_url, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool)
+    hidden = f"{CHECKPOINT_ROLE}_hidden_{secrets.token_hex(4)}"
+    with admin.connect() as connection:
+        connection.execute(text(f"ALTER ROLE {CHECKPOINT_ROLE} RENAME TO {hidden}"))
+        try:
+            with pytest.raises(Exception, match="audit_log_checkpoint must be provisioned"):
+                run_migrations(fresh_database)
+        finally:
+            connection.execute(text(f"ALTER ROLE {hidden} RENAME TO {CHECKPOINT_ROLE}"))
+    admin.dispose()
+
+    # Every migration runs in one transaction, so nothing from 0001 remains either.
     assert "audit_records" not in inspect(fresh_database).get_table_names()

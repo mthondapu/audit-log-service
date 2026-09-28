@@ -191,11 +191,11 @@ The v1 verification response shall contain:
 | `verifiedAt` | Time of verification |
 | `recordsChecked` | Number of records checked |
 | `head` | `sequence` and `recordHash` of the verified chain head; `null` for an empty chain |
-| `anchor` | Checkpoint `status` and `sequence`; `NONE` when no checkpoint exists. Statuses specific to the checkpoint lifecycle are deferred with FR-4. |
+| `anchor` | The comparison with the latest checkpoint (FR-4): `status` and the checkpoint's `sequence`; `NONE` with a `null` sequence when no checkpoint exists |
 | `violationCount` | Number of records with a violation |
-| `firstViolation` | `type`, `sequence`, `recordId`, and a fixed message; `null` when intact |
+| `firstViolation` | `type`, `sequence`, `recordId` (`null` for `CHAIN_TRUNCATED`), and a fixed message; `null` when intact |
 
-Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. The mechanics of `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` are deferred to the checkpoint implementation (FR-4), together with the checkpoint format, trusted-anchor lifecycle, and signature semantics.
+Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` compare the chain with the latest checkpoint (FR-4, since Phase 10).
 
 `PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. Since Phase 8 it is reported with the fixed message below, and it ranks immediately after `PAYLOAD_VALUE_MISMATCH`. A redaction event authorizes a missing value when it is a later `AUDIT_LOG_REDACTION` event with no violation of its own and no missing values, whose `targetId` is the record and whose `paths` list the value's pointer. Since Phase 9, a retention event authorizes (rule 1 below) when it has no violation of its own in the first verification pass, its `eventType` is `AUDIT_LOG_RETENTION`, and its `upToSequence` is readable as an integer with `1 <= upToSequence < ` its own `sequence`; it then covers every record whose `sequence` is at most `upToSequence`. Its other values may be missing, because a later retention event can archive it.
 
@@ -225,7 +225,7 @@ Legitimate archived and redacted records shall not be reported as integrity viol
 The API definition (Phase 7, developer decisions D1 to D4):
 
 - `verifiedAt` is the database clock (`clock_timestamp()`), read once at the start of verification, in the canonical `YYYY-MM-DDTHH:MM:SS.ffffffZ` form. The verified records and payload values come from one `REPEATABLE READ`, `READ ONLY` snapshot;
-- until checkpoints exist, `anchor` is `{"status": "NONE", "sequence": null}`; FR-4 will add lifecycle statuses to the same object;
+- `anchor` is `{"status": "NONE", "sequence": null}` when no checkpoint exists; otherwise its status is set as described in FR-4 (Phase 10);
 - each violation type has one fixed message:
 
 | Type | Message |
@@ -239,10 +239,12 @@ The API definition (Phase 7, developer decisions D1 to D4):
 | `RECORD_HASH_MISMATCH` | The record's recordHash does not match its sequence, previousHash, and contentHash. |
 | `PAYLOAD_VALUE_MISSING` | A payload value is missing without an authorizing redaction or retention event. |
 | `RECORDED_AT_REGRESSION` | The record's recordedAt is earlier than the preceding record's recordedAt. |
+| `ANCHOR_MISMATCH` | The record at the latest checkpoint's sequence does not match the checkpoint's recordHash. |
+| `CHAIN_TRUNCATED` | Records up to the latest checkpoint's sequence are missing from the end of the chain. |
 
 - the endpoint takes no query parameters; any query parameter, unknown or repeated, is rejected with `422`.
 
-Until checkpoints are implemented, verification does not detect truncation of the newest records or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`). Modification, deletion, insertion, and reordering of records, changed payload values, and (since Phase 8) payload values deleted without an authorizing redaction are detected.
+Modification, deletion, insertion, and reordering of records, changed payload values, and (since Phase 8) payload values deleted without an authorizing redaction are detected without a checkpoint. Since Phase 10, truncation below the latest checkpoint and a consistent rewrite of the checkpointed record are detected against it (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`); without a checkpoint, or above the latest one, they are not (FR-4).
 
 ### FR-4 — Integrity Anchoring / Checkpoints
 
@@ -262,7 +264,20 @@ Checkpoint creation (design decision):
 - the CLI verifies the audit chain before signing, and refuses to create or sign a checkpoint when verification fails; and
 - checkpoint signing and storage are outside the audit database.
 
-The CLI syntax, checkpoint artifact format, storage location, lifecycle and timing, and key-management details remain deferred.
+The implementation (Phase 10, developer decisions CP1 to CP16):
+
+- **Commands.** `audit-log-checkpoint create` creates a checkpoint; it takes no options. `audit-log-verify checkpoint --public-key <spki.pem> <artifact>...` verifies checkpoint artifacts offline. Both are console scripts of the package.
+- **Operator credential.** The CLI reads the operator's raw API key from stdin: without echo on a terminal, otherwise one line, with only the trailing line break removed. The key is never taken from command-line arguments or environment variables. It is checked against the same API-key configuration as the service, and the operator must hold `checkpoint:create`; writers, auditors, and regulators are refused before the signing key is read or the database is contacted. This check attributes the checkpoint and keeps the tool from other principals; it is not a cryptographic control, because whoever can read the signing key can sign.
+- **Database access.** The CLI connects with `AUDIT_LOG_CHECKPOINT_DATABASE_URL`, a login in the `audit_log_checkpoint` role, which has only `SELECT` on the audit tables (migration 0002). The CLI refuses a login that can insert, update, delete, or truncate audit data, and verifies in a `REPEATABLE READ`, `READ ONLY` snapshot.
+- **Artifact.** A JSON object `{"checkpoint": {...}, "signature": "<128 lowercase hex>"}`. The signed `checkpoint` object has exactly `scheme` (`audit-log/v1`), `sequence`, `recordHash`, `createdAt` (the database clock at verification; informational, not a trusted timestamp), `createdBy` (the operator's principal ID), and `keyId` (the SHA-256 of the raw public key). Ed25519 signs `UTF-8("audit-log/v1/checkpoint") || 0x00 || RFC8785(checkpoint)` directly. The file is the RFC 8785 form of the whole object followed by a line feed. Readers accept at most 64 KiB of strict JSON (no duplicate keys, no NaN or infinity) with exactly these keys and value forms.
+- **Store.** One directory, `AUDIT_LOG_CHECKPOINT_STORE_DIR`, outside the database. Artifacts are named `checkpoint-<sequence as 20 zero-padded digits>.json`; other names are ignored. Every matching file must parse, name the trusted key, have a valid signature, and carry the sequence of its name; otherwise the whole store is invalid (fail closed). The latest checkpoint is the valid artifact with the highest sequence. A new artifact is written to a temporary file, flushed, and hard-linked to its name, so an existing checkpoint is never overwritten.
+- **Keys.** The checkpoint signing key is separate from the export signing key. The CLI reads an unencrypted Ed25519 PKCS#8 PEM private key from `AUDIT_LOG_CHECKPOINT_SIGNING_KEY_FILE`, only after the operator is authorized. The service holds only the trusted public key (`AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE`, SubjectPublicKeyInfo PEM); every artifact in the store must verify with it. Keys are generated outside the project (for example with OpenSSL); none is committed.
+- **Creation.** The CLI reads the store, then verifies the whole chain against the latest checkpoint in one snapshot. It refuses an empty chain or a chain that is not intact, including one that fails the existing checkpoint, and writes nothing. When the head is already the latest checkpoint it reports `CHECKPOINT_CURRENT` and writes nothing; otherwise it signs the head, checks the signature, writes the artifact, and reports `CHECKPOINT_CREATED`. Output is one JSON line: `outcome`, `sequence`, `recordHash`, `keyId`, and `file`. Exit codes: `0` created or current, `1` refused (not intact or empty), `2` usage or configuration error, `3` authentication failed, `4` not authorized, `5` database or store unavailable. Creating a checkpoint appends nothing to the chain; the operator is recorded in the signed `createdBy` and in an operational log line.
+- **Verification.** `GET /audit/verify` and the CLI read the store before opening the database snapshot, so a checkpoint written in between cannot be mistaken for truncation. With the latest checkpoint as the anchor: a head below the checkpoint's sequence is `CHAIN_TRUNCATED`, reported once at the first missing sequence with a `null` `recordId`; a record at the checkpoint's sequence with a different `recordHash` is `ANCHOR_MISMATCH` at that record, ranked after every other violation type, so a record that already has a violation is not counted twice; a missing record at that sequence is already reported as a gap. The `anchor` status is `NONE`, `VERIFIED`, `MISMATCH`, or `TRUNCATED`. An invalid or unreadable store returns `500` Problem Details "The checkpoint store is invalid or unreadable."; nothing in it is trusted.
+- **Offline verifier.** Checks each supplied artifact's format, `keyId`, and signature against a public key obtained out of band, without the service, the database, or any `AUDIT_LOG_*` setting. It prints one JSON line per artifact, `VALID` with the signed fields or `INVALID` with a fixed reason (`MALFORMED`, `KEY_MISMATCH`, or `SIGNATURE_INVALID`), and exits `0` when every artifact is valid, `1` otherwise, and `2` on a usage error. Export bundles are verified with exports (FR-7).
+- **Lifecycle.** Checkpoints are created manually by an operator; nothing is scheduled. The unanchored window above is the time since the last checkpoint.
+
+The production key lifecycle, storage, and distribution remain deferred.
 
 ### FR-5 — Retention
 
@@ -449,7 +464,7 @@ Export security (Focused Discussion #4):
 - **Signing.** Export manifests are signed with Ed25519. The required `cryptography` dependency shall be validated and explicitly approved during implementation planning. *(Approved in principle)* The Phase 2 dependency gate validated its Ed25519 support; the outcome is recorded in ADR-0006.
 - **Key identifier.** `keyId` is the SHA-256 fingerprint of the raw public key. The design supports key rotation, verification of historical signatures, and a trust anchor obtained out of band rather than from the live service. *(Approved in principle)*
 
-Deferred: whether exports and checkpoints use separate signing keys, and the production key lifecycle, storage, and distribution.
+Exports and checkpoints use separate signing keys (Phase 10, developer decision CP7): the export key is loaded by the running service, and the checkpoint key must not be. Deferred: the production key lifecycle, storage, and distribution.
 
 ### FR-8 — Regulatory Access Audit / Scenario C
 
@@ -590,7 +605,7 @@ Other structured configuration (such as the Scenario C vocabulary) is supplied i
 - every authentication failure returns `401 Unauthorized` with `WWW-Authenticate: Bearer` and the same Problem Details structure. This covers a missing Authorization header, a non-Bearer scheme, an empty or malformed token, multiple Authorization headers, and unknown credentials;
 - requests are processed in a fixed order: authenticate (`401`), then authorize (`403`), then validate the request (`400`/`422`), then look up resources (`404`/`409`).
 
-**Checkpoint CLI database access (design decision, D4):** the checkpoint CLI uses read-only database access for chain verification. Exact role names and grants are implementation details.
+**Checkpoint CLI database access (design decision, D4):** the checkpoint CLI uses read-only database access for chain verification. Since Phase 10 it uses the `audit_log_checkpoint` role, with `SELECT` only on the audit tables (FR-4).
 
 Prototype capability model (a prototype security boundary, not an assignment requirement or a production role-based access-control design):
 
@@ -603,7 +618,7 @@ Prototype capability model (a prototype security boundary, not an assignment req
 
 **Denied attempts:** failed authentication and authorization attempts against the audit service are logged operationally and are not appended to the audit chain.
 
-**Signing keys:** the export signing algorithm and `keyId` direction are recorded in FR-7. Whether checkpoint and export keys are separate, and the production key lifecycle, storage, and distribution, remain deferred.
+**Signing keys:** the export signing algorithm and `keyId` direction are recorded in FR-7. Checkpoint and export keys are separate (FR-4, FR-7). The production key lifecycle, storage, and distribution remain deferred.
 
 ### NFR-3 — Performance
 
@@ -807,7 +822,7 @@ The implementation shall demonstrate the clarified interpretation of regulatory 
 |---|---|---|
 | Ambiguous Scenario C access semantics | Incorrect regulatory audit behavior | Resolve through documented brainstorming, assumptions, and a clarified requirement statement |
 | Simple hash chains may not detect complete rewrites | False confidence in historical integrity | Ed25519-signed checkpoints stored outside the database (FR-4) |
-| Records appended after the latest checkpoint can be rewritten, fabricated, or truncated by an attacker with database write access | Undetected tampering within the unanchored window | Document the limitation; checkpoint timing (deferred) determines the window size |
+| Records appended after the latest checkpoint can be rewritten, fabricated, or truncated by an attacker with database write access | Undetected tampering within the unanchored window | Document the limitation; checkpoints are created manually by an operator (FR-4), and the time since the last one is the window |
 | Checkpoint signing key compromise | Forged checkpoints undermine rewrite and truncation detection | Keep the key out of the database and source control; key-management details deferred |
 | Concurrent appends may create ordering or chain-integrity problems | Corrupted or inconsistent audit history | Advisory-lock serialized appends with `UNIQUE(sequence)` and `UNIQUE(previous_hash)` (NFR-1), plus concurrency tests |
 | Canonicalization differs between the service and an independent verifier | False tamper reports, or exports that cannot be verified | RFC 8785 over I-JSON input, FR-1 input restrictions, RFC test vectors, and storage round-trip tests |
@@ -883,15 +898,13 @@ Requirements requiring technical design decisions are intentionally not finalize
 Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), retention, redaction, and export decisions (Focused Discussion #3), and security and Scenario C decisions (Focused Discussion #4) have been incorporated. The following remain open:
 
 - **Security:**
-  - checkpoint CLI and tamper-actor database roles and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1; the application role and its grants are decided in ADR-0009).
-- **Checkpoint and key design:**
-  - the checkpoint CLI syntax, and the checkpoint lifecycle, timing, artifact format, and storage location;
-  - whether checkpoint and export signing keys are separate;
+  - tamper-actor database role and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1; the application and checkpoint CLI roles and their grants are decided in ADR-0009).
+- **Key management:**
   - the production key lifecycle, storage, and distribution.
 - **Implementation planning:**
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the access-event vocabulary names;
-  - configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation, and the environment-variable names, are decided in ADR-0008);
+  - configuration file paths and the demo-key generation mechanism (the configuration format and validation, and the environment-variable names, are decided in ADR-0008);
   - export size limit.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 

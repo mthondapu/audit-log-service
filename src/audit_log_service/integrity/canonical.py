@@ -5,7 +5,7 @@ numeric domain (requirements FR-1): every number, whatever its notation, must be
 +/-(2^53 - 1), evaluated as the IEEE-754 double. RFC 8785 itself does not impose that bound.
 
 Every hash input is ``UTF-8(label) || 0x00 || RFC8785(object)``, hashed with SHA-256 and written as
-lowercase hexadecimal.
+lowercase hexadecimal. A signed checkpoint signs the same labeled input directly (FR-4).
 """
 
 import hashlib
@@ -21,6 +21,7 @@ SCHEME = "audit-log/v1"
 CONTENT_LABEL = "audit-log/v1/content"
 RECORD_LABEL = "audit-log/v1/record"
 COMMITMENT_LABEL = "audit-log/v1/commitment"
+CHECKPOINT_LABEL = "audit-log/v1/checkpoint"
 
 MAX_SAFE_INTEGER = 2**53 - 1
 _LABEL_SEPARATOR = b"\x00"
@@ -41,10 +42,14 @@ def canonicalize(value: JsonValue) -> bytes:
         raise IntegrityInputError("value cannot be canonicalized") from None
 
 
+def labeled_bytes(label: str, value: JsonValue) -> bytes:
+    """Return the domain-separated input UTF-8(label) || 0x00 || RFC8785(value)."""
+    return label.encode("utf-8") + _LABEL_SEPARATOR + canonicalize(value)
+
+
 def labeled_sha256(label: str, value: JsonValue) -> str:
     """Hash a value under a domain label: SHA-256(UTF-8(label) || 0x00 || RFC8785(value))."""
-    digest = hashlib.sha256(label.encode("utf-8") + _LABEL_SEPARATOR + canonicalize(value))
-    return digest.hexdigest()
+    return hashlib.sha256(labeled_bytes(label, value)).hexdigest()
 
 
 def is_sha256_hex(text: object) -> bool:

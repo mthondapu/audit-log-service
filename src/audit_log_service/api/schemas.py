@@ -95,11 +95,15 @@ class ChainHead(BaseModel):
 
 
 class Anchor(BaseModel):
-    """Checkpoint anchor. Until checkpoints exist, always status NONE with a null sequence."""
+    """The comparison with the latest checkpoint (FR-4, Phase 10 decision CP10).
+
+    `NONE` (no checkpoint, null sequence), `VERIFIED`, `MISMATCH`, or `TRUNCATED`; otherwise
+    `sequence` is the checkpoint's sequence.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str
+    status: Literal["NONE", "VERIFIED", "MISMATCH", "TRUNCATED"]
     sequence: int | None
 
 
@@ -108,7 +112,7 @@ class Violation(BaseModel):
 
     type: str
     sequence: int
-    recordId: str
+    recordId: str | None
     message: str
 
 
@@ -140,7 +144,7 @@ def represent_verification(verification: ApplicationChainVerification) -> dict[s
         head=None
         if head is None
         else ChainHead(sequence=head.sequence, recordHash=head.record_hash),
-        anchor=Anchor(status="NONE", sequence=None),
+        anchor=Anchor(status=result.anchor_status.value, sequence=result.anchor_sequence),
         violationCount=result.violation_count,
         firstViolation=None
         if violation is None

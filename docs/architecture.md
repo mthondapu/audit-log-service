@@ -89,6 +89,8 @@ Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 
 **Implemented so far (Phases 5–9):** `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, and `POST /audit/retention-runs`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
 
+**Command-line programs (Phase 10):** `audit-log-checkpoint create` (the checkpoint CLI) and `audit-log-verify checkpoint` (the offline verifier, checkpoint artifacts only until exports exist). See Section 12 and requirements FR-4.
+
 ## 6. Authentication and authorization
 
 See [ADR-0008](adr/0008-authentication-and-authorization.md).
@@ -179,7 +181,14 @@ See [ADR-0006](adr/0006-checkpoint-trust-anchor.md).
 - **What they enable.** Record modification is detected without a checkpoint. After a checkpoint is created, tail truncation below it is reported as `CHAIN_TRUNCATED`, and a full rewrite with recomputed hashes is reported as `ANCHOR_MISMATCH`.
 - **Limitation.** Records appended after the latest checkpoint can be rewritten, fabricated, or truncated by an attacker with database write access (FR-4).
 
-The exact CLI syntax, checkpoint file format, store location, and lifecycle or timing are deferred.
+**Implementation (Phase 10).** The command syntax, operator credential, artifact format, store layout, keys, and exit codes are recorded in requirements FR-4. In brief:
+
+- the operator's API key is read from stdin, never from arguments or the environment, and checked with the service's API-key configuration; `checkpoint:create` is required before the signing key is read or the database is contacted. This check attributes the checkpoint and keeps other principals from the tool; the real boundary is file-system access to the signing key;
+- the CLI's database login is in `audit_log_checkpoint`, which has only `SELECT`;
+- a checkpoint is an Ed25519 signature over `UTF-8("audit-log/v1/checkpoint") || 0x00 || RFC8785(checkpoint)`, stored as one JSON file per checkpoint in a configured directory, named by its 20-digit sequence and never overwritten;
+- the checkpoint key is separate from the export key; the service holds only the trusted public key;
+- the service and the CLI validate every artifact in the store, fail closed on any invalid one, and read the store before opening their database snapshot; and
+- checkpoints are created manually; nothing is scheduled.
 
 ## 13. Export and offline verification
 
@@ -220,11 +229,11 @@ See [ADR-0009](adr/0009-database-privileges-and-tamper-boundary.md).
 | Checkpoint CLI access | Chain verification before checkpoint signing | Read-only access to the audit data (D4); no insert, update, or delete |
 | Tamper actor | Demonstrations of detection | Privileged direct modification of the database, outside the application trust boundary |
 
-Immutable records are additionally protected by a database-level guard for the application role. In Phase 4 the guard is the application role's privileges: `audit_log_app` (a `NOLOGIN` group role provisioned outside the migrations) has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`, with no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`. There is deliberately no trigger that blocks every role, so the future privileged tamper tooling needs no trigger disabling (ADR-0009). Checkpoint CLI and tamper-actor grants are deferred.
+Immutable records are additionally protected by a database-level guard for the application role. In Phase 4 the guard is the application role's privileges: `audit_log_app` (a `NOLOGIN` group role provisioned outside the migrations) has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`, with no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`. There is deliberately no trigger that blocks every role, so the future privileged tamper tooling needs no trigger disabling (ADR-0009). Since Phase 10, the checkpoint CLI uses `audit_log_checkpoint`, a `NOLOGIN` group role with only `SELECT` on both tables (migration 0002). Tamper-actor grants are deferred.
 
 ## 15. Tamper demonstration boundary
 
-Tamper demonstrations run through separate, privileged tooling, never through the normal application API. The tooling may reuse the integrity library, for example to recompute a consistent forged chain for the full-rewrite demonstration. The tamper actor has no access to the checkpoint store, signing keys, or API-key configuration. How the tamper actor obtains its database privileges is part of the tooling, not the application architecture.
+Tamper demonstrations run through separate, privileged tooling, never through the normal application API. The tooling may reuse the integrity library, for example to recompute a consistent forged chain for the full-rewrite demonstration. The tamper actor has no access to the checkpoint store, signing keys, or API-key configuration. How the tamper actor obtains its database privileges is part of the tooling, not the application architecture. It must not be a PostgreSQL superuser or hold `pg_write_server_files` or `pg_execute_server_program`: those can write files on the database host (for example with `COPY ... TO`), which would reach the checkpoint store if it shared that host (ADR-0009).
 
 ## 16. Scenario C architecture
 
@@ -243,8 +252,8 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 |---|---|---|
 | TB-1 | Callers → API | Bearer API keys, capabilities, authorization before resource lookup |
 | TB-2 | Service → database | Application role cannot update or delete immutable records; uniqueness constraints prevent forks |
-| TB-3 | Database → checkpoint store and signing keys | Stored outside the database; not accessible to the tamper actor |
-| TB-4 | Operator → checkpoint CLI | `checkpoint:create` required; configured store only |
+| TB-3 | Database → checkpoint store and signing keys | Stored outside the database; not accessible to the tamper actor, which must not hold server-file or program-execution privileges; the service reads the store only, with the public key |
+| TB-4 | Operator → checkpoint CLI | API key from stdin; `checkpoint:create` required; read-only database role; configured store only. File access to the signing key is the actual signing boundary |
 | TB-5 | Service → export recipient | Ed25519-signed manifest verified with an out-of-band trusted public key |
 | TB-6 | Tamper actor → database | Outside the application trust boundary; detected by verification and checkpoints |
 
@@ -291,13 +300,12 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 
 ## 21. Deferred implementation details
 
-- Checkpoint CLI syntax, checkpoint artifact format, store location, and lifecycle or timing.
-- Separate or shared checkpoint and export signing keys; production key lifecycle, storage, and distribution.
+- Production key lifecycle, storage, and distribution.
 - Exact manifest schema and retention-evidence representation (inside the signed manifest).
 - Export audit event payload fields.
 - Access-event vocabulary names.
-- Configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation, and the environment-variable names, are decided in ADR-0008 (D3).
-- Checkpoint CLI and tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).
+- Configuration file paths and the demo-key generation mechanism. The configuration format and validation, and the environment-variable names, are decided in ADR-0008 (D3).
+- Tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).
 
 ## 22. Architecture decision references
 

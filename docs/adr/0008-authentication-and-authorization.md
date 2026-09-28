@@ -74,13 +74,15 @@ Errors may identify the file, principal, and field, but never echo raw keys or h
 - `AUDIT_LOG_VOCABULARY_FILE`: the Scenario C vocabulary file;
 - `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS`: the allowed future skew of a caller `timestamp`, default 300.
 - `AUDIT_LOG_RETENTION_WINDOW_SECONDS`, `AUDIT_LOG_RETENTION_BATCH_SIZE`, `AUDIT_LOG_RETENTION_MAX_BATCHES`: retention settings (Phase 9; see requirements FR-5).
+- `AUDIT_LOG_CHECKPOINT_STORE_DIR` and `AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE`: the checkpoint store and the trusted checkpoint public key; required (Phase 10; see requirements FR-4).
+
+**Checkpoint CLI (Phase 10, decisions CP2 and CP3):** the CLI uses `AUDIT_LOG_CHECKPOINT_DATABASE_URL` (a read-only login), `AUDIT_LOG_API_KEYS_FILE`, `AUDIT_LOG_CHECKPOINT_STORE_DIR`, and `AUDIT_LOG_CHECKPOINT_SIGNING_KEY_FILE`. The operator's raw API key is read from stdin, without echo on a terminal, and never from arguments or environment variables. It is matched by the same constant-time digest comparison as a Bearer key (`authenticate_api_key`); the Authorization-header parsing is not reused. Every authentication failure gives the same message, and `checkpoint:create` is required before the signing key or the database is used.
 
 The migration URL (`AUDIT_LOG_MIGRATION_DATABASE_URL`) is separate and is never part of the service's configuration (ADR-0009).
 
 **Deferred:**
 
 - filesystem paths;
-- how the CLI is presented with the operator's credential;
 - the Scenario C vocabulary names;
 - `.gitignore` details;
 - the demo-key generation mechanism.

@@ -1,6 +1,6 @@
 # ADR-0006: Checkpoint trust anchor
 
-- **Status:** Accepted (artifact format, storage location, lifecycle, and CLI syntax deferred)
+- **Status:** Accepted; implemented in Phase 10 (production key lifecycle deferred)
 - **Date:** 2026-09-28
 - **Decision owner:** Developer (Focused Discussion #2, decision I9; AD-3, RB-1, L-D1)
 
@@ -53,12 +53,25 @@ Exports do not gain intervening chain-link evidence, and no request parameter se
   - Because the export audit event is appended above `asOfSequence`, a checkpoint created after an export cannot match that export's `asOfSequence`.
   - When a checkpoint cannot be anchored, the recipient relies on the service's pre-signing verification (including its own checkpoint checks) and on the export signature.
 
+## Implementation (Phase 10)
+
+Decided by the developer on 2026-09-28 (decisions CP1 to CP16). The full contract is in requirements FR-4.
+
+- **Commands.** `audit-log-checkpoint create` creates checkpoints; `audit-log-verify checkpoint --public-key <spki.pem> <artifact>...` verifies artifacts offline. The offline verifier imports only the integrity library and needs no service, database, or configuration; export bundles are added with FR-7.
+- **Operator credential.** The raw API key is read from stdin (without echo on a terminal), never from arguments or environment variables, and checked against the service's API-key configuration by the same digest comparison (`authenticate_api_key`). `checkpoint:create` is required before the signing key is read or the database is contacted.
+- **Trust boundary of that check.** The capability check attributes each checkpoint to an operator (the signed `createdBy`) and keeps the tool from other API principals. It is not a cryptographic control: anyone who can read the signing key can sign without the CLI. File-system access to the signing key is the actual signing boundary.
+- **Database access.** A read-only role, `audit_log_checkpoint` (ADR-0009). Creating a checkpoint appends nothing to the chain.
+- **Artifact.** One JSON file per checkpoint: a `checkpoint` object with exactly `scheme`, `sequence`, `recordHash`, `createdAt`, `createdBy`, and `keyId`, and an Ed25519 `signature` (lowercase hex) over `UTF-8("audit-log/v1/checkpoint") || 0x00 || RFC8785(checkpoint)`, with no pre-hash. `keyId` is inside the signed content. `createdAt` is the database clock at verification and is not a trusted timestamp.
+- **Store.** A configured directory (`AUDIT_LOG_CHECKPOINT_STORE_DIR`) with files named `checkpoint-<20-digit sequence>.json`. Other names are ignored; any invalid matching file makes the whole store invalid. New files are written to a temporary file, flushed, and hard-linked into place, so none is overwritten.
+- **Keys (S23).** The checkpoint key is separate from the export key. The export key must be loaded by the running HTTP service; the checkpoint key must not be, so a service compromise cannot forge trust anchors. The service holds only the trusted public key (`AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE`), and both settings are required. Keys are generated outside the project; test keys are generated per test.
+- **Verification.** The service and the CLI read and validate the store before opening their database snapshot, so a checkpoint written in between is never mistaken for truncation, and take the latest valid checkpoint as the anchor. `CHAIN_TRUNCATED`, `ANCHOR_MISMATCH`, their messages, and the anchor statuses are defined in requirements FR-3 and FR-4. An invalid or unreadable store is a `500` for `GET /audit/verify` and exit code `5` for the CLI.
+- **Creation.** The CLI refuses an empty chain and any chain that is not intact against the existing checkpoint; an unchanged head is reported as `CHECKPOINT_CURRENT` and nothing is written.
+- **Lifecycle.** Manual; nothing is scheduled.
+- **Store protection.** The tamper actor must not be a PostgreSQL superuser or hold server-file or program-execution privileges, which could write the store if it shared the database host (ADR-0009).
+
 ## Deferred
 
-- Exact CLI command syntax and how the operator credential is presented.
-- Checkpoint artifact format and store location.
-- Lifecycle and timing.
-- Whether checkpoint and export signing keys are separate (S23), and production key lifecycle, storage, and distribution.
+- Production key lifecycle, storage, and distribution, including key rotation for the checkpoint store (the prototype trusts one public key).
 
 ## Signing dependency outcome
 
@@ -73,7 +86,7 @@ Recorded 2026-09-28 (Phase 2 dependency gate). This outcome also applies to expo
   - verification of the RFC 8032 Section 7.1 TEST 2 vector, using only its public key, message, and signature;
   - signing RFC 8785 canonical bytes, with the signature kept outside the signed content.
 - All test keys are generated in memory; no key material is stored or committed.
-- The checkpoint artifact format, key storage and lifecycle, and whether checkpoint and export keys are separate remain deferred.
+- The checkpoint artifact format and key separation were decided in Phase 10 (see "Implementation (Phase 10)"); key storage and lifecycle remain deferred.
 - **Tests:** `tests/unit/dependency_gates/test_ed25519_gate.py`.
 
 ## Alternatives considered

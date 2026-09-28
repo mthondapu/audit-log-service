@@ -7,6 +7,7 @@ import pytest
 from audit_log_service.api.schemas import represent_verification
 from audit_log_service.application.verification import VIOLATION_MESSAGES, ChainVerification
 from audit_log_service.integrity.verification import (
+    AnchorStatus,
     ChainHead,
     VerificationResult,
     Violation,
@@ -31,7 +32,7 @@ def _report(result: VerificationResult) -> dict[str, object]:
 
 
 def test_messages_cover_exactly_the_approved_violation_types() -> None:
-    # The eight Phase 7 types plus PAYLOAD_VALUE_MISSING (Phase 8).
+    # The eight Phase 7 types, PAYLOAD_VALUE_MISSING (Phase 8), and the checkpoint types (Phase 10).
     assert set(VIOLATION_MESSAGES) == set(ViolationType)
     assert {t.value for t in VIOLATION_MESSAGES} == {
         "SEQUENCE_DUPLICATE",
@@ -43,6 +44,8 @@ def test_messages_cover_exactly_the_approved_violation_types() -> None:
         "PAYLOAD_VALUE_MISSING",
         "RECORD_HASH_MISMATCH",
         "RECORDED_AT_REGRESSION",
+        "ANCHOR_MISMATCH",
+        "CHAIN_TRUNCATED",
     }
 
 
@@ -71,6 +74,13 @@ def test_messages_are_the_approved_wording() -> None:
         ),
         ViolationType.RECORDED_AT_REGRESSION: (
             "The record's recordedAt is earlier than the preceding record's recordedAt."
+        ),
+        ViolationType.ANCHOR_MISMATCH: (
+            "The record at the latest checkpoint's sequence does not match the checkpoint's "
+            "recordHash."
+        ),
+        ViolationType.CHAIN_TRUNCATED: (
+            "Records up to the latest checkpoint's sequence are missing from the end of the chain."
         ),
     }
     assert not any(re.search(r"[{}%]", message) for message in VIOLATION_MESSAGES.values())
@@ -132,3 +142,51 @@ def test_broken_chain_report_uses_the_fixed_message(violation_type: ViolationTyp
         "message": VIOLATION_MESSAGES[violation_type],
     }
     assert report["anchor"] == {"status": "NONE", "sequence": None}
+
+
+@pytest.mark.parametrize(
+    ("status", "sequence"),
+    [
+        (AnchorStatus.VERIFIED, 3),
+        (AnchorStatus.MISMATCH, 3),
+        (AnchorStatus.TRUNCATED, 7),
+    ],
+)
+def test_report_renders_the_anchor_status_and_checkpoint_sequence(
+    status: AnchorStatus, sequence: int
+) -> None:
+    report = _report(
+        VerificationResult(
+            intact=status is AnchorStatus.VERIFIED,
+            records_checked=3,
+            head=ChainHead(sequence=3, record_hash="a" * 64),
+            violation_count=0 if status is AnchorStatus.VERIFIED else 1,
+            first_violation=None,
+            anchor_status=status,
+            anchor_sequence=sequence,
+        )
+    )
+    assert report["anchor"] == {"status": status.value, "sequence": sequence}
+
+
+def test_truncation_report_has_a_null_record_id() -> None:
+    report = _report(
+        VerificationResult(
+            intact=False,
+            records_checked=2,
+            head=ChainHead(sequence=2, record_hash="a" * 64),
+            violation_count=1,
+            first_violation=Violation(
+                type=ViolationType.CHAIN_TRUNCATED, sequence=3, record_id=None
+            ),
+            anchor_status=AnchorStatus.TRUNCATED,
+            anchor_sequence=5,
+        )
+    )
+    assert report["firstViolation"] == {
+        "type": "CHAIN_TRUNCATED",
+        "sequence": 3,
+        "recordId": None,
+        "message": VIOLATION_MESSAGES[ViolationType.CHAIN_TRUNCATED],
+    }
+    assert report["anchor"] == {"status": "TRUNCATED", "sequence": 5}

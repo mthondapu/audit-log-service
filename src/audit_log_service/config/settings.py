@@ -7,6 +7,14 @@
 - AUDIT_LOG_RETENTION_WINDOW_SECONDS: retention window (FR-5); optional. Unset disables retention.
 - AUDIT_LOG_RETENTION_BATCH_SIZE: payload-value rows purged per batch; default 500.
 - AUDIT_LOG_RETENTION_MAX_BATCHES: purge batches per run (the execution bound); default 20.
+- AUDIT_LOG_CHECKPOINT_STORE_DIR: the checkpoint store directory (FR-4); required.
+- AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE: the trusted checkpoint public key, Ed25519
+  SubjectPublicKeyInfo PEM; required. The service never holds the private key (decision CP8).
+
+The checkpoint CLI has its own settings (`load_checkpoint_cli_settings`, decisions CP3 and CP4):
+AUDIT_LOG_CHECKPOINT_DATABASE_URL (a login in `audit_log_checkpoint`), AUDIT_LOG_API_KEYS_FILE,
+AUDIT_LOG_CHECKPOINT_STORE_DIR, and AUDIT_LOG_CHECKPOINT_SIGNING_KEY_FILE (an unencrypted Ed25519
+PKCS#8 PEM private key, read only after the operator is authorized).
 
 Settings are loaded once at startup and fail fast. Errors name the variable, never its value.
 """
@@ -17,12 +25,15 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from audit_log_service.config.api_keys import ApiKeyConfiguration, load_api_key_configuration
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.vocabulary import (
     ClientAccountVocabulary,
     load_client_account_vocabulary,
 )
+from audit_log_service.integrity.checkpoints import KeyFormatError, load_public_key
 
 DATABASE_URL_VARIABLE = "AUDIT_LOG_DATABASE_URL"
 API_KEYS_FILE_VARIABLE = "AUDIT_LOG_API_KEYS_FILE"
@@ -37,6 +48,10 @@ MAX_RETENTION_BATCH_SIZE = 10_000
 MAX_RETENTION_BATCHES = 1_000
 DEFAULT_RETENTION_BATCH_SIZE = 500
 DEFAULT_RETENTION_MAX_BATCHES = 20
+CHECKPOINT_STORE_DIR_VARIABLE = "AUDIT_LOG_CHECKPOINT_STORE_DIR"
+CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE = "AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE"
+CHECKPOINT_DATABASE_URL_VARIABLE = "AUDIT_LOG_CHECKPOINT_DATABASE_URL"
+CHECKPOINT_SIGNING_KEY_FILE_VARIABLE = "AUDIT_LOG_CHECKPOINT_SIGNING_KEY_FILE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +62,8 @@ class Settings:
     api_keys: ApiKeyConfiguration
     vocabulary: ClientAccountVocabulary
     timestamp_skew: timedelta
+    checkpoint_store_dir: Path
+    checkpoint_public_key: Ed25519PublicKey = field(repr=False)
     retention_window: timedelta | None = None
     retention_batch_size: int = DEFAULT_RETENTION_BATCH_SIZE
     retention_max_batches: int = DEFAULT_RETENTION_MAX_BATCHES
@@ -61,6 +78,8 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
             Path(_required(environ, VOCABULARY_FILE_VARIABLE))
         ),
         timestamp_skew=_timestamp_skew(environ),
+        checkpoint_store_dir=_directory(environ, CHECKPOINT_STORE_DIR_VARIABLE),
+        checkpoint_public_key=_public_key(environ, CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE),
         retention_window=_retention_window(environ),
         retention_batch_size=_bounded_integer(
             environ,
@@ -74,6 +93,32 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
             DEFAULT_RETENTION_MAX_BATCHES,
             MAX_RETENTION_BATCHES,
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointCliSettings:
+    """Validated checkpoint CLI settings. The database URL may contain a password."""
+
+    database_url: str = field(repr=False)
+    api_keys: ApiKeyConfiguration
+    store_dir: Path
+    signing_key_file: Path
+
+
+def load_checkpoint_cli_settings(environ: Mapping[str, str] = os.environ) -> CheckpointCliSettings:
+    """Read and validate the checkpoint CLI's settings. The signing key is not read here."""
+    database_url = _required(environ, CHECKPOINT_DATABASE_URL_VARIABLE)
+    api_keys = load_api_key_configuration(Path(_required(environ, API_KEYS_FILE_VARIABLE)))
+    store_dir = _directory(environ, CHECKPOINT_STORE_DIR_VARIABLE)
+    signing_key_file = Path(_required(environ, CHECKPOINT_SIGNING_KEY_FILE_VARIABLE))
+    if not signing_key_file.is_file():
+        raise ConfigurationError(f"{CHECKPOINT_SIGNING_KEY_FILE_VARIABLE} must name a file")
+    return CheckpointCliSettings(
+        database_url=database_url,
+        api_keys=api_keys,
+        store_dir=store_dir,
+        signing_key_file=signing_key_file,
     )
 
 
@@ -114,3 +159,19 @@ def _bounded_integer(environ: Mapping[str, str], name: str, default: int, maximu
     if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= maximum:
         raise ConfigurationError(f"{name} must be a whole number from 1 to {maximum}")
     return int(text)
+
+
+def _directory(environ: Mapping[str, str], name: str) -> Path:
+    path = Path(_required(environ, name))
+    if not path.is_dir():
+        raise ConfigurationError(f"{name} must name an existing directory")
+    return path
+
+
+def _public_key(environ: Mapping[str, str], name: str) -> Ed25519PublicKey:
+    try:
+        return load_public_key(Path(_required(environ, name)).read_bytes())
+    except (OSError, KeyFormatError):
+        raise ConfigurationError(
+            f"{name} must name a readable Ed25519 public key in SubjectPublicKeyInfo PEM form"
+        ) from None

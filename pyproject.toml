@@ -15,6 +15,10 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+audit-log-checkpoint = "audit_log_service.cli.checkpoint:main"
+audit-log-verify = "audit_log_service.offline.verify:main"
+
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13"]
 build-backend = "uv_build"

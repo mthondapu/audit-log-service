@@ -25,6 +25,7 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
     - at an included record's sequence, compared with that record's signed and recomputed `recordHash`.
 
     Otherwise the checkpoint is reported as "not applicable / insufficient evidence", which is not a chain-integrity failure, and the other checks continue.
+- **Separate signing key (Phase 10, S23).** The export signing key is separate from the checkpoint signing key (ADR-0006): the running service holds the export key, but must never hold the checkpoint key.
 - **No bridging evidence.** Exports do not contain intervening chain-link evidence solely to bridge arbitrary recipient checkpoints. The signed manifest remains the authoritative signed export evidence.
 
 ## Consequences
@@ -37,7 +38,7 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
 
 - Exact manifest schema and retention-evidence field structure, constrained to remain inside the signed manifest.
 - Export audit event payload fields.
-- Separate or shared checkpoint and export keys (S23); production key lifecycle, storage, and distribution.
+- Production key lifecycle, storage, and distribution.
 
 ## Alternatives considered
 

@@ -1,7 +1,8 @@
 """Fixtures for API tests against the real persistence layer.
 
 The app uses the session's migrated test database through the `audit_log_app` role (see the parent
-conftest), fake API keys, and the example Scenario C vocabulary.
+conftest), fake API keys, the example Scenario C vocabulary, and an empty checkpoint store trusted
+with an ephemeral key.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -11,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import Engine
 
 from audit_log_service.api.app import create_app
@@ -25,7 +27,11 @@ PostEvent = Callable[..., httpx.Response]
 
 
 @pytest.fixture
-def settings(api_key_configuration: ApiKeyConfiguration) -> Settings:
+def settings(
+    api_key_configuration: ApiKeyConfiguration,
+    checkpoint_store: Path,
+    checkpoint_key: Ed25519PrivateKey,
+) -> Settings:
     return Settings(
         database_url="unused: the tests supply the engine",
         api_keys=api_key_configuration,
@@ -33,6 +39,8 @@ def settings(api_key_configuration: ApiKeyConfiguration) -> Settings:
             CONFIG_DIR / "client-account-vocabulary.example.toml"
         ),
         timestamp_skew=timedelta(minutes=5),
+        checkpoint_store_dir=checkpoint_store,
+        checkpoint_public_key=checkpoint_key.public_key(),
     )
 
 

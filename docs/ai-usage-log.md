@@ -2045,3 +2045,130 @@ retention then authorizes those values.
 
 **Sign-off:** I gave the Phase 9 decisions and the Option B follow-up decision recorded above. My review and sign-off
 of the Phase 9 implementation are pending.
+
+### 2026-09-28 — Phase 10: signed checkpoints
+
+**Date/Time:** 2026-09-28, from 21:51 UTC (from session timestamps: Phase 10 planning requested at 21:51;
+implementation decisions approved at 21:59).
+
+**Activity:** Developer-led, AI-assisted planning and implementation of FR-4: Ed25519-signed checkpoints created by an
+authorized CLI, verification against the latest checkpoint, and an offline checkpoint verifier.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude produced a read-only Phase 10 plan. It analysed explicitly how an HTTP-oriented
+API-key check could serve a CLI, and proposed sixteen decisions (CP1 to CP16):
+
+- two console scripts;
+- the operator key read from stdin only, with the authentication core split out of the header parsing;
+- a read-only `audit_log_checkpoint` role (migration 0002);
+- the artifact format and the `audit-log/v1/checkpoint` label;
+- the store layout, failing closed;
+- separate checkpoint and export keys;
+- required service settings with a single trusted public key;
+- anchor semantics, precedence, and messages, and the anchor statuses;
+- create outcomes and exit codes;
+- no chain event for checkpoint creation;
+- offline verifier scope;
+- no keygen command;
+- manual lifecycle;
+- reading the store before the database snapshot.
+
+It also reported a trust-boundary finding: a PostgreSQL superuser, or a role with server-file or program-execution
+privileges, can write files on the database host, which would break TB-3 if the store shared that host.
+
+**My decision.** I approved CP1 to CP16 and the trust-boundary finding exactly as proposed, and set the plan as the
+implementation contract.
+
+**What the AI implemented:**
+
+- `integrity/checkpoints.py`:
+  - the artifact: `Checkpoint`, `SignedCheckpoint`, `key_id`, `signing_input`, `sign_checkpoint`,
+    `encode_artifact`;
+  - strict parsing (`parse_artifact`) and `verify_checkpoint`, with fixed failure reasons;
+  - PEM key loading.
+
+  `canonical.py` gains the label and a `labeled_bytes` helper; `labeled_sha256` now uses it, and every hash formula
+  is unchanged.
+- `integrity/verification.py`: an optional anchor, `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED`, `AnchorStatus`, and a
+  nullable `record_id`.
+- `persistence/checkpoint_store.py` (read-only, fail-closed store validation) and `persistence/checkpoint_writer.py`
+  (temporary file, fsync, exclusive hard link).
+- `application/verification.py` reads the store before the snapshot. `application/checkpoints.py` holds the create
+  flow.
+- `cli/checkpoint.py` (`audit-log-checkpoint create`) and `offline/verify.py` (`audit-log-verify checkpoint`), with
+  both declared in `pyproject.toml`.
+- `security/authentication.py`: the new `authenticate_api_key`; `authenticate` delegates to it, and HTTP behaviour is
+  unchanged.
+- `config/settings.py`: the service's required store and public-key settings, and `load_checkpoint_cli_settings`.
+- The API: the anchor in the verification response, a nullable `recordId`, and a `500` handler for an invalid store.
+- `migrations/versions/0002_checkpoint_role_grants.py`, `scripts/provision_database_roles.sql`, and
+  `CHECKPOINT_ROLE`.
+
+**Implementation interpretations** (for my review):
+
+- Migration 0002 is irreversible, like 0001; its downgrade raises.
+- The CLI runs its database privilege check before it reads the store. The store is still read before the
+  verification snapshot (CP16).
+- `createdBy` must match the ADR-0008 principal-id pattern, repeated in the integrity module so that it stays free of
+  configuration code.
+- Operator key input longer than 4,096 characters is rejected.
+- The offline verifier treats an unreadable key or artifact file as a usage error (exit 2). A `VALID` line includes the
+  signed checkpoint fields.
+- A concurrent create that finds its file already present, and a failed store write, exit with 5.
+- The CLI's operational line is `checkpoint outcome=<OUTCOME> operator=<id> sequence=<n> keyId=<hex>` on stderr.
+
+**Tests (243 new, 1202 in total):**
+
+- **Unit (200):**
+  - artifact format, parsing, and signatures (71), including the exact signing-input bytes, the structural deviations,
+    and the key-swap case;
+  - anchor verification (16), with two Hypothesis properties;
+  - the store (17);
+  - the CLI (41): credential input, argument and environment refusal, authorization before key or database, and exit
+    codes;
+  - the offline verifier (12);
+  - import boundaries (3), run in fresh interpreters;
+  - 40 added to existing files: authentication, settings, and the verification report.
+- **Integration against real PostgreSQL (43):**
+  - the CLI (26): role grants, privilege checks, end-to-end creation, `CHECKPOINT_CURRENT`, refusals, access control,
+    and secret hygiene;
+  - checkpoint verification through the API (16): truncation, a full rewrite, the post-checkpoint limitation, an
+    invalid store, the store not being read before authentication, and the store-before-snapshot race;
+  - the migration role (1).
+
+Tampering in the tests uses the owner engine; no trigger is disabled.
+
+**Documentation updates:**
+
+- `requirements.md`: FR-3, the FR-4 implementation, FR-7 and NFR-2 on the keys, the risk table, and §13.
+- `architecture.md`: §5, §12, §14, §15, §17, and §21.
+- ADR-0002, ADR-0006 (a new implementation section), ADR-0007, ADR-0008, and ADR-0009 (the checkpoint role and the
+  tamper-role constraint).
+- `README.md`.
+
+**Limitations:**
+
+- No export, no L-D1 export anchoring, and no scheduling.
+- The service trusts one public key; rotation belongs to deferred key management.
+- The prototype private key is an unencrypted PEM file.
+- Records after the latest checkpoint remain unanchored.
+- The tamper role is still not implemented.
+- The `httpx2` warning remains.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `pytest --cov` reported 1202 passed (855 unit, 346 integration, and 1 package test), with 100% statement and
+  branch coverage and no exclusions.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the Phase 10 decisions recorded above. My review and sign-off of the Phase 10 implementation are
+pending.

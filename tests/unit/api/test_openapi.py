@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import create_engine
 
 from audit_log_service.api.app import create_app
@@ -38,7 +39,10 @@ EVENT_FIELDS = {
 
 @pytest.fixture
 def openapi(
-    api_key_configuration: ApiKeyConfiguration, make_client: Callable[[Any], httpx.Client]
+    api_key_configuration: ApiKeyConfiguration,
+    make_client: Callable[[Any], httpx.Client],
+    checkpoint_store: Path,
+    checkpoint_key: Ed25519PrivateKey,
 ) -> dict[str, Any]:
     settings = Settings(
         database_url="postgresql+psycopg://unused@127.0.0.1:1/unused",
@@ -47,6 +51,8 @@ def openapi(
             CONFIG_DIR / "client-account-vocabulary.example.toml"
         ),
         timestamp_skew=timedelta(minutes=5),
+        checkpoint_store_dir=checkpoint_store,
+        checkpoint_public_key=checkpoint_key.public_key(),
     )
     # The engine never connects: the lifespan does not run without a client context.
     app = create_app(settings, create_engine(settings.database_url))
@@ -125,8 +131,8 @@ def test_verify_documents_its_statuses_and_result(openapi: dict[str, Any]) -> No
     verify = openapi["paths"]["/audit/verify"]["get"]
 
     assert "parameters" not in verify
-    assert set(verify["responses"]) == {"200", "401", "403", "422", "503"}
-    assert _problem_codes(verify["responses"]) == {"401", "403", "422", "503"}
+    assert set(verify["responses"]) == {"200", "401", "403", "422", "500", "503"}
+    assert _problem_codes(verify["responses"]) == {"401", "403", "422", "500", "503"}
     assert verify["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ChainVerification"
     }
@@ -143,6 +149,16 @@ def test_verify_documents_its_statuses_and_result(openapi: dict[str, Any]) -> No
     ]
     assert set(schemas["Violation"]["properties"]) == {"type", "sequence", "recordId", "message"}
     assert set(schemas["Anchor"]["properties"]) == {"status", "sequence"}
+    assert schemas["Anchor"]["properties"]["status"]["enum"] == [
+        "NONE",
+        "VERIFIED",
+        "MISMATCH",
+        "TRUNCATED",
+    ]
+    assert schemas["Violation"]["properties"]["recordId"]["anyOf"] == [
+        {"type": "string"},
+        {"type": "null"},
+    ]
 
 
 def test_redaction_documents_its_body_statuses_and_result(openapi: dict[str, Any]) -> None:

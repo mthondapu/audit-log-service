@@ -7,10 +7,12 @@ import dataclasses
 import re
 import uuid
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import URL, Connection, Engine, create_engine, pool, text
 
 from audit_log_service.application import verification as verification_module
@@ -154,7 +156,10 @@ def test_verified_at_comes_from_the_database_clock(verify: Verify, app_engine: E
 
 
 def test_verification_reads_one_read_only_repeatable_read_snapshot(
-    app_engine: Engine, monkeypatch: pytest.MonkeyPatch
+    app_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_store: Path,
+    checkpoint_key: Ed25519PrivateKey,
 ) -> None:
     observed: dict[str, str] = {}
 
@@ -165,7 +170,7 @@ def test_verification_reads_one_read_only_repeatable_read_snapshot(
 
     monkeypatch.setattr(verification_module, "load_chain_entries", spy)
 
-    verify_audit_chain(app_engine)
+    verify_audit_chain(app_engine, checkpoint_store, checkpoint_key.public_key())
 
     assert observed == {"isolation": "repeatable read", "read_only": "on"}
 
@@ -367,7 +372,11 @@ def fresh_owner_engine(
 
 
 def test_duplicate_sequence_is_detected(
-    fresh_owner_engine: Engine, new_event: Callable[..., NewEvent], insert_sealed: Any
+    fresh_owner_engine: Engine,
+    new_event: Callable[..., NewEvent],
+    insert_sealed: Any,
+    checkpoint_store: Path,
+    checkpoint_key: Ed25519PrivateKey,
 ) -> None:
     # Only possible once the tamper actor drops UNIQUE(sequence); done in a throwaway database.
     with fresh_owner_engine.begin() as connection:
@@ -384,7 +393,9 @@ def test_duplicate_sequence_is_detected(
         )
         insert_sealed(connection, duplicate)
 
-    result = verify_audit_chain(fresh_owner_engine).result
+    result = verify_audit_chain(
+        fresh_owner_engine, checkpoint_store, checkpoint_key.public_key()
+    ).result
 
     assert result.first_violation is not None
     assert (result.first_violation.type, result.first_violation.sequence) == (
@@ -394,10 +405,10 @@ def test_duplicate_sequence_is_detected(
     assert result.first_violation.record_id == "ffffffff-ffff-4fff-bfff-ffffffffffff"
 
 
-# --- Documented limitations until later phases --------------------------------------------------
+# --- Without a checkpoint (the FR-4 limitation; see test_checkpoint_verify_api.py) ---------------
 
 
-def test_tail_truncation_is_not_detected_before_checkpoints(
+def test_tail_truncation_is_not_detected_without_a_checkpoint(
     verify: Verify, seed: Seed, owner_engine: Engine
 ) -> None:
     seed(3)
@@ -418,7 +429,7 @@ def test_deleted_payload_value_is_payload_value_missing(
     assert _first(verify()) == ("PAYLOAD_VALUE_MISSING", 1)
 
 
-def test_consistent_full_rewrite_is_not_detected_before_checkpoints(
+def test_consistent_full_rewrite_is_not_detected_without_a_checkpoint(
     verify: Verify, seed: Seed, owner_engine: Engine
 ) -> None:
     records = seed(3)

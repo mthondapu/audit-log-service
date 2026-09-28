@@ -25,6 +25,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
 APPLICATION_ROLE = "audit_log_app"
+# The checkpoint CLI's read-only group role (migration 0002, ADR-0009 D4).
+CHECKPOINT_ROLE = "audit_log_checkpoint"
 
 metadata = MetaData()
 

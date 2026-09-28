@@ -11,8 +11,10 @@ salts, payload keys, `actorId`, `resourceId`, or `recordedBy`.
 A missing payload value is `PAYLOAD_VALUE_MISSING` unless it is authorized (requirements FR-3):
 by a later, valid `AUDIT_LOG_REDACTION` event that names the record and lists the value's pointer
 (FR-6), or by a valid `AUDIT_LOG_RETENTION` event whose `upToSequence` covers the record (FR-5).
-`ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (with checkpoints) are not implemented yet; tail truncation
-is not detectable by this verifier alone.
+With a trusted checkpoint as the anchor (FR-4, Phase 10 decision CP9), a chain whose head is below
+the checkpoint is `CHAIN_TRUNCATED`, and a record at the checkpoint's sequence with a different
+`recordHash` is `ANCHOR_MISMATCH`. Without an anchor, tail truncation and a consistent full rewrite
+are not detectable.
 """
 
 import json
@@ -43,7 +45,11 @@ RETENTION_EVENT_TYPE = "AUDIT_LOG_RETENTION"
 
 
 class ViolationType(StrEnum):
-    """Violation types implemented in this phase, in per-record precedence order."""
+    """Violation types in per-record precedence order.
+
+    `ANCHOR_MISMATCH` ranks last for the record at the checkpoint's sequence. `CHAIN_TRUNCATED` is
+    reported once for the chain, at the first missing sequence, with no record.
+    """
 
     SEQUENCE_DUPLICATE = "SEQUENCE_DUPLICATE"
     SEQUENCE_GAP = "SEQUENCE_GAP"
@@ -54,6 +60,17 @@ class ViolationType(StrEnum):
     PAYLOAD_VALUE_MISSING = "PAYLOAD_VALUE_MISSING"
     RECORD_HASH_MISMATCH = "RECORD_HASH_MISMATCH"
     RECORDED_AT_REGRESSION = "RECORDED_AT_REGRESSION"
+    ANCHOR_MISMATCH = "ANCHOR_MISMATCH"
+    CHAIN_TRUNCATED = "CHAIN_TRUNCATED"
+
+
+class AnchorStatus(StrEnum):
+    """The outcome of comparing the chain with the trusted checkpoint (CP10)."""
+
+    NONE = "NONE"
+    VERIFIED = "VERIFIED"
+    MISMATCH = "MISMATCH"
+    TRUNCATED = "TRUNCATED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +87,7 @@ class ChainEntry:
 class Violation:
     type: ViolationType
     sequence: int
-    record_id: str
+    record_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +103,24 @@ class VerificationResult:
     head: ChainHead | None
     violation_count: int
     first_violation: Violation | None
+    anchor_status: AnchorStatus = AnchorStatus.NONE
+    anchor_sequence: int | None = None
 
 
-def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
-    """Verify an ordered sequence of records from genesis.
+def verify_chain(
+    entries: Iterable[ChainEntry], anchor: ChainHead | None = None
+) -> VerificationResult:
+    """Verify an ordered sequence of records from genesis, optionally against a trusted anchor.
 
     Pass 1 applies every per-record check except missing payload values. A missing value can be
     authorized only by a later, valid redaction event, so pass 2 checks missing values once every
     redaction event is known, keeping the `ViolationType` precedence.
+
+    `anchor` is the sequence and `recordHash` of a checkpoint whose signature the caller has
+    already verified. If the head is below it, the chain is truncated. Otherwise the first record
+    at the anchor's sequence must have its `recordHash`; a mismatch is `ANCHOR_MISMATCH` unless
+    that record already has a violation. No record at that sequence means a gap that is already
+    reported, so the anchor is `MISMATCH` with no further violation.
     """
     ordered = list(entries)
     seen_sequences: set[int] = set()
@@ -104,11 +131,18 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
         seen_sequences.add(entry.record.sequence)
         predecessor = entry.record
 
+    head = (
+        None
+        if predecessor is None
+        else ChainHead(sequence=predecessor.sequence, record_hash=predecessor.record_hash)
+    )
+    anchor_status, anchor_index = _compare_anchor(ordered, head, anchor)
+
     authorized = _redaction_authorizations(ordered, checked)
     retained_up_to = _retention_coverage(ordered, checked)
     violation_count = 0
     first_violation: Violation | None = None
-    for entry, violation_type in zip(ordered, checked, strict=True):
+    for index, (entry, violation_type) in enumerate(zip(ordered, checked, strict=True)):
         record = entry.record
         # Missing values rank after the pass-1 checks up to PAYLOAD_VALUE_MISMATCH.
         outranks_missing = violation_type is not None and (
@@ -120,6 +154,8 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
             and _has_unauthorized_missing_value(entry, authorized)
         ):
             violation_type = ViolationType.PAYLOAD_VALUE_MISSING
+        if violation_type is None and index == anchor_index:
+            violation_type = ViolationType.ANCHOR_MISMATCH
         if violation_type is not None:
             violation_count += 1
             if first_violation is None:
@@ -127,18 +163,40 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
                     type=violation_type, sequence=record.sequence, record_id=record.content.id
                 )
 
-    head = (
-        None
-        if predecessor is None
-        else ChainHead(sequence=predecessor.sequence, record_hash=predecessor.record_hash)
-    )
+    if anchor_status is AnchorStatus.TRUNCATED:
+        violation_count += 1
+        if first_violation is None:
+            first_violation = Violation(
+                type=ViolationType.CHAIN_TRUNCATED,
+                sequence=1 if head is None else head.sequence + 1,
+                record_id=None,
+            )
+
     return VerificationResult(
         intact=violation_count == 0,
         records_checked=len(ordered),
         head=head,
         violation_count=violation_count,
         first_violation=first_violation,
+        anchor_status=anchor_status,
+        anchor_sequence=None if anchor is None else anchor.sequence,
     )
+
+
+def _compare_anchor(
+    entries: list[ChainEntry], head: ChainHead | None, anchor: ChainHead | None
+) -> tuple[AnchorStatus, int | None]:
+    """The anchor status, and the index of the record that fails to match the anchor, if any."""
+    if anchor is None:
+        return AnchorStatus.NONE, None
+    if head is None or head.sequence < anchor.sequence:
+        return AnchorStatus.TRUNCATED, None
+    for index, entry in enumerate(entries):
+        if entry.record.sequence == anchor.sequence:
+            if entry.record.record_hash == anchor.record_hash:
+                return AnchorStatus.VERIFIED, None
+            return AnchorStatus.MISMATCH, index
+    return AnchorStatus.MISMATCH, None
 
 
 _PRECEDENCE = list(ViolationType)
