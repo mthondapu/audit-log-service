@@ -151,3 +151,15 @@ def test_unreadable_appended_record_is_a_500_and_rolls_back(
     _assert_problem(response, 500)
     with app_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM audit_records")).scalar_one() == 0
+
+
+def test_query_with_unreachable_database_is_503(
+    settings: Settings, make_client: MakeClient, auditor: Headers
+) -> None:
+    unreachable = create_engine(
+        "postgresql+psycopg://nobody@127.0.0.1:1/nothing", connect_args={"connect_timeout": 1}
+    )
+    response = make_client(create_app(settings, unreachable)).get("/audit/events", headers=auditor)
+
+    body = _assert_problem(response, 503)
+    assert body["detail"] == "The service is temporarily unavailable."

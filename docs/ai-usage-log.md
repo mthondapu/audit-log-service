@@ -1512,3 +1512,97 @@ the approved `httpx`; a small typed helper keeps Pyright strict clean. No depend
 
 **Sign-off:** I gave the C1–C3 and D1–D4 decisions recorded above. My review and sign-off of the Phase 5
 implementation are pending.
+
+### 2026-09-28 — Phase 6: audit event query API
+
+**Date/Time:** 2026-09-28, from 19:06 UTC (from session timestamps: Phase 6 requested at 19:06; my decisions on
+Q1–Q3 given at 19:07).
+
+**Activity:** Developer-led, AI-assisted implementation of `GET /audit/events` (filters and cursor pagination) on
+the Phase 4 persistence and Phase 5 API layers.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Previously approved requirements:** FR-2 (filters, AND semantics, the half-open `recordedAt` range, ascending
+`sequence` order, opaque cursors bound to the filters, page size 50 by default and 200 at most, no total count,
+unknown parameters rejected, and `includeArchived`) and the Phase 5 API conventions.
+
+**Clarifications before coding.** Claude checked my Phase 6 brief against FR-2 and stopped on three conflicts. My
+decisions (19:07 UTC):
+
+- **Q1:** add `eventType` as an exact-match filter (FR-2, SC-A3). My brief had omitted it.
+- **Q2:** `resourceType` and `resourceId` are independent filters, as FR-2 states; `resourceId` alone matches across
+  resource types. My brief had required them together.
+- **Q3:** accept `includeArchived` (default `false`) now, bound into the cursor. It has no observable effect until
+  retention exists.
+
+Claude also recommended adding no index until query performance is measured (NFR-3). The details FR-2 leaves open
+(the `limit` name, the response envelope, `from > to`, and the cursor format) were recorded as an API-definition
+note in FR-2.
+
+**What the AI implemented:**
+
+- `application/queries.py`:
+  - parameter validation: unknown or repeated parameters rejected; `from` and `to` through the Phase 5 RFC 3339
+    normalizer; `from` after `to` rejected; exact-match filters with the append patterns and lengths;
+    `includeArchived` as `true` or `false`; `limit` 1 to 200, default 50;
+  - the opaque cursor: base64url canonical JSON holding a version, the last `sequence`, and a SHA-256 digest of the
+    filter set, which excludes `limit`. It is strictly validated; a malformed cursor or a different filter set is
+    rejected with `422`. The cursor is unsigned, because a forged one can only move within data the caller may
+    already read. It is neither stored nor expired.
+  - `run_query`, which reads `limit + 1` records to decide whether `nextCursor` exists.
+
+  Messages are fixed text and never include submitted values.
+- `persistence/audit_log.py`: `EventFilters` and `query_entries`, one parameterized read-only statement. It selects
+  a keyset page (`sequence > cursor`, filters combined with AND, `ORDER BY sequence`, `LIMIT`) and joins its payload
+  values, so each page is a single snapshot. It takes no lock.
+- `api/events.py` and `api/schemas.py`: `GET /audit/events` in the D4 order, returning `{items, nextCursor}` with the
+  Phase 5 item representation, and an OpenAPI document for its nine parameters, the page schema, and `200`, `401`,
+  `403`, `422`, and `503`.
+- `application/events.py`: the Phase 5 timestamp normalizer and text check became public (`canonical_time`,
+  `is_storable_text`) so queries reuse them. Their behavior for event submission is unchanged.
+
+**Tests (120 new, 736 in total):**
+
+- **Unit (69):**
+  - query validation and cursors (68): every rule, equivalent filter sets sharing a digest, cursor reuse across
+    filters, 18 malformed cursor forms, and one Hypothesis property (any issued cursor is accepted with its filters);
+  - OpenAPI (1).
+- **API integration against real PostgreSQL (51):**
+  - authentication before validation, and authorization;
+  - an empty page, the representation identical to `POST`, and ascending order;
+  - each filter, the independent resource filters, AND combinations, and the half-open range at an exact boundary;
+  - equal and reversed bounds, and malformed times;
+  - `includeArchived`;
+  - pagination: 50 by default, 200 at most, out-of-range limits, a complete walk with no duplicates or gaps, a final
+    full page, paging with filters, a changed page size, and records appended between pages;
+  - cursor misuse, and unknown or repeated parameters;
+  - no echo of submitted values;
+  - queries leaving the chain unchanged;
+  - `503` when the database is unreachable.
+
+**Documentation updates:** `requirements.md` (the FR-2 API-definition note). No ADR changes.
+
+**Limitations:**
+
+- `includeArchived` has no effect until retention exists.
+- There are no additional indexes; filtered queries walk the `sequence` index. Query performance is to be measured
+  under NFR-3.
+- The `httpx2` deprecation warning noted in Phase 5 remains.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 736 passed (540 unit, 195 integration, and 1 package test), with 100% statement and branch
+  coverage and no coverage exclusions.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the Q1–Q3 decisions recorded above. My review and sign-off of the Phase 6 implementation are
+pending.

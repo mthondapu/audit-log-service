@@ -21,10 +21,11 @@ serializes writers. The integrity core computes every hash, commitment, and cano
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Connection, Select, func, insert, select, text
+from sqlalchemy import ColumnElement, Connection, Select, and_, func, insert, select, text
 
 from audit_log_service.integrity.canonical import JsonValue
 from audit_log_service.integrity.commitments import PayloadValue, commit_payload
@@ -140,6 +141,66 @@ def load_entry(connection: Connection, record_id: uuid.UUID) -> ChainEntry | Non
     rows = connection.execute(_records_with_values().where(audit_records.c.id == record_id)).all()
     entries = _entries_from_rows(rows)
     return entries[0] if entries else None
+
+
+@dataclass(frozen=True, slots=True)
+class EventFilters:
+    """Exact-match filters and the half-open `recordedAt` range, combined with AND (FR-2).
+
+    `include_archived` has no effect yet: no record is archived until retention is implemented.
+    """
+
+    actor_id: str | None = field(default=None, repr=False)
+    event_type: str | None = None
+    resource_type: str | None = None
+    resource_id: str | None = field(default=None, repr=False)
+    recorded_from: datetime | None = None
+    recorded_to: datetime | None = None
+    include_archived: bool = False
+
+
+def query_entries(
+    connection: Connection, filters: EventFilters, after_sequence: int, limit: int
+) -> list[ChainEntry]:
+    """Return up to `limit` matching records with `sequence > after_sequence`, in sequence order.
+
+    Keyset pagination: one statement selects the page of records and joins their values, so the
+    page reflects a single snapshot. Read-only; the append lock is not taken.
+    """
+    conditions: list[ColumnElement[bool]] = [audit_records.c.sequence > after_sequence]
+    if filters.actor_id is not None:
+        conditions.append(audit_records.c.actor_id == filters.actor_id)
+    if filters.event_type is not None:
+        conditions.append(audit_records.c.event_type == filters.event_type)
+    if filters.resource_type is not None:
+        conditions.append(audit_records.c.resource_type == filters.resource_type)
+    if filters.resource_id is not None:
+        conditions.append(audit_records.c.resource_id == filters.resource_id)
+    if filters.recorded_from is not None:
+        conditions.append(audit_records.c.recorded_at >= filters.recorded_from)
+    if filters.recorded_to is not None:
+        conditions.append(audit_records.c.recorded_at < filters.recorded_to)
+
+    page = (
+        select(audit_records)
+        .where(and_(*conditions))
+        .order_by(audit_records.c.sequence)
+        .limit(limit)
+        .subquery()
+    )
+    rows = connection.execute(
+        select(
+            page,
+            audit_payload_values.c.pointer,
+            audit_payload_values.c.canonical_value,
+            audit_payload_values.c.salt,
+        )
+        .select_from(
+            page.outerjoin(audit_payload_values, audit_payload_values.c.record_id == page.c.id)
+        )
+        .order_by(page.c.sequence, audit_payload_values.c.pointer)
+    ).all()
+    return _entries_from_rows(rows)
 
 
 def _records_with_values() -> Select[Any]:

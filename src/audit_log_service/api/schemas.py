@@ -30,6 +30,15 @@ class AuditEvent(BaseModel):
     recordHash: str
 
 
+class AuditEventPage(BaseModel):
+    """One page of query results, in ascending `sequence` order. There is no total count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AuditEvent]
+    nextCursor: str | None
+
+
 class ProblemDetails(BaseModel):
     """RFC 9457 Problem Details, served as application/problem+json."""
 

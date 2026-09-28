@@ -73,7 +73,7 @@ def prepare_event(
     if submission.eventType.startswith(RESERVED_EVENT_TYPE_PREFIX):
         raise SubmissionError("eventType is in the reserved system-event namespace")
     for name, text in (("actorId", submission.actorId), ("resourceId", submission.resourceId)):
-        if not _is_storable_text(text):
+        if not is_storable_text(text):
             raise SubmissionError(f"{name} contains a character that is not allowed")
     _check_payload(submission.payload)
     if submission.resourceType == vocabulary.resource_type:
@@ -83,7 +83,7 @@ def prepare_event(
         actor_id=submission.actorId,
         resource_type=submission.resourceType,
         resource_id=submission.resourceId,
-        timestamp=None if submission.timestamp is None else _canonical_time(submission.timestamp),
+        timestamp=None if submission.timestamp is None else canonical_time(submission.timestamp),
         recorded_by=recorded_by,
         payload=submission.payload,
     )
@@ -116,16 +116,17 @@ def find_event(connection: Connection, event_id: str) -> ChainEntry | None:
     return load_entry(connection, record_id)
 
 
-def _canonical_time(text: str) -> str:
+def canonical_time(text: str, field: str = "timestamp") -> str:
+    """Normalize an RFC 3339 date-time with a UTC offset to the canonical timestamp text."""
     if _RFC3339.fullmatch(text) is None:
         raise SubmissionError(
-            "timestamp must be an RFC 3339 date-time with a UTC offset and at most six "
+            f"{field} must be an RFC 3339 date-time with a UTC offset and at most six "
             "fractional-second digits"
         )
     try:
         return format_timestamp(datetime.fromisoformat(text.upper()))
     except (ValueError, OverflowError, IntegrityInputError):
-        raise SubmissionError("timestamp is not a valid date and time") from None
+        raise SubmissionError(f"{field} is not a valid date and time") from None
 
 
 def _check_payload(payload: dict[str, JsonValue]) -> None:
@@ -165,10 +166,10 @@ def _all_text_storable(value: object) -> bool:
     stack: list[object] = [value]
     while stack:
         node = stack.pop()
-        if isinstance(node, str) and not _is_storable_text(node):
+        if isinstance(node, str) and not is_storable_text(node):
             return False
         if isinstance(node, dict) and not all(
-            _is_storable_text(key) for key in cast(dict[str, object], node)
+            is_storable_text(key) for key in cast(dict[str, object], node)
         ):
             return False
         children = _children(cast(object, node))
@@ -185,7 +186,7 @@ def _children(node: object) -> list[object] | None:
     return None
 
 
-def _is_storable_text(text: str) -> bool:
+def is_storable_text(text: str) -> bool:
     """No U+0000 (PostgreSQL) and no unpaired surrogates (UTF-8 and canonical hashing)."""
     if "\x00" in text:
         return False

@@ -132,6 +132,16 @@ Unknown query parameters shall be rejected with `422`, because silently ignoring
 
 The service shall also provide `GET /audit/events/{id}` to retrieve a single audit record by its identifier.
 
+The API definition (Phase 6, developer decisions Q1–Q3) sets the query contract as follows:
+
+- query parameters: `from`, `to`, `actorId`, `eventType`, `resourceType`, `resourceId`, `includeArchived`, `limit`, and `cursor`; any other parameter, or a repeated one, is rejected with `422`;
+- `from` and `to` are RFC 3339 date-times with a UTC offset, validated as for append; `from` later than `to` is rejected with `422`, and `from` equal to `to` returns an empty page;
+- `actorId` and `resourceId` are 1 to 256 characters; `eventType` and `resourceType` match the append pattern; each is an exact match;
+- `includeArchived` is `true` or `false`; until retention is implemented no record is archived, so it has no observable effect;
+- `limit` is the page size (default 50, 1 to 200);
+- the response is `{"items": [...], "nextCursor": ...}`, where each item is the record representation above and `nextCursor` is `null` on the last page; and
+- the cursor is opaque. It records the last returned `sequence` and a digest of the filter set (every parameter except `limit` and `cursor`), so the page size may change between pages but the filters may not. A malformed cursor, or one used with different filters, is rejected with `422`. Cursors are neither stored nor expired.
+
 `sequence` assignment under concurrent appends is defined in NFR-1.
 
 Archived records (design decision, Focused Discussion #3):

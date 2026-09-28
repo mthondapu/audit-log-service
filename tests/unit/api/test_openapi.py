@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 
 from audit_log_service.api.app import create_app
 from audit_log_service.application.events import SERVER_ASSIGNED_FIELDS
+from audit_log_service.application.queries import QUERY_PARAMETERS
 from audit_log_service.config.api_keys import ApiKeyConfiguration
 from audit_log_service.config.settings import Settings
 from audit_log_service.config.vocabulary import load_client_account_vocabulary
@@ -63,11 +64,15 @@ def _problem_codes(responses: dict[str, Any]) -> set[str]:
     }
 
 
-def test_only_the_phase_5_operations_are_documented(openapi: dict[str, Any]) -> None:
+def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any]) -> None:
     operations = {
         (path, method) for path, methods in openapi["paths"].items() for method in methods
     }
-    assert operations == {("/audit/events", "post"), ("/audit/events/{id}", "get")}
+    assert operations == {
+        ("/audit/events", "post"),
+        ("/audit/events", "get"),
+        ("/audit/events/{id}", "get"),
+    }
 
 
 def test_post_documents_the_request_body_and_statuses(openapi: dict[str, Any]) -> None:
@@ -84,6 +89,33 @@ def test_post_documents_the_request_body_and_statuses(openapi: dict[str, Any]) -
     assert created["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/AuditEvent"
     }
+
+
+def test_query_documents_its_parameters_statuses_and_page(openapi: dict[str, Any]) -> None:
+    query = openapi["paths"]["/audit/events"]["get"]
+    parameters = {parameter["name"]: parameter for parameter in query["parameters"]}
+
+    assert set(parameters) == set(QUERY_PARAMETERS)
+    assert all(p["in"] == "query" and p["required"] is False for p in parameters.values())
+    assert parameters["limit"]["schema"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 50,
+    }
+    assert parameters["includeArchived"]["schema"] == {"type": "boolean", "default": False}
+    assert parameters["eventType"]["schema"]["pattern"] == "^[A-Z][A-Z0-9_]{0,63}$"
+    assert parameters["resourceType"]["schema"]["pattern"] == "^[A-Z][A-Z0-9_]{0,63}$"
+    assert parameters["actorId"]["schema"]["maxLength"] == 256
+    assert parameters["from"]["schema"] == {"type": "string", "format": "date-time"}
+    assert set(query["responses"]) == {"200", "401", "403", "422", "503"}
+    assert _problem_codes(query["responses"]) == {"401", "403", "422", "503"}
+    assert query["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AuditEventPage"
+    }
+    page = openapi["components"]["schemas"]["AuditEventPage"]
+    assert set(page["properties"]) == {"items", "nextCursor"}
+    assert page["properties"]["items"]["items"] == {"$ref": "#/components/schemas/AuditEvent"}
 
 
 def test_get_documents_its_statuses(openapi: dict[str, Any]) -> None:
