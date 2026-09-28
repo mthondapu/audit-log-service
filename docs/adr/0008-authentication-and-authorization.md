@@ -73,6 +73,7 @@ Errors may identify the file, principal, and field, but never echo raw keys or h
 - `AUDIT_LOG_API_KEYS_FILE`: the API-key configuration file;
 - `AUDIT_LOG_VOCABULARY_FILE`: the Scenario C vocabulary file;
 - `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS`: the allowed future skew of a caller `timestamp`, default 300.
+- `AUDIT_LOG_RETENTION_WINDOW_SECONDS`, `AUDIT_LOG_RETENTION_BATCH_SIZE`, `AUDIT_LOG_RETENTION_MAX_BATCHES`: retention settings (Phase 9; see requirements FR-5).
 
 The migration URL (`AUDIT_LOG_MIGRATION_DATABASE_URL`) is separate and is never part of the service's configuration (ADR-0009).
 

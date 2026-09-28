@@ -1,16 +1,18 @@
 """Response schemas and the public audit event representation (requirements FR-2, NFR-7)."""
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from audit_log_service.application.retention import RetentionResult
 from audit_log_service.application.verification import VIOLATION_MESSAGES
 from audit_log_service.application.verification import (
     ChainVerification as ApplicationChainVerification,
 )
+from audit_log_service.application.views import EventView
 from audit_log_service.integrity.canonical import SCHEME
-from audit_log_service.integrity.commitments import reveal_payload
-from audit_log_service.integrity.verification import ChainEntry
+from audit_log_service.integrity.commitments import PayloadValue, reveal_payload
 
 
 class AuditEvent(BaseModel):
@@ -56,15 +58,16 @@ class ProblemDetails(BaseModel):
     requestId: str | None = None
 
 
-def represent(entry: ChainEntry) -> dict[str, Any]:
-    """Build the public representation. Salts and commitments are never included.
+def represent(view: EventView) -> dict[str, Any]:
+    """Build the public representation. Salts and commitments are never included (FR-2).
 
-    Values that are no longer stored (redacted) render as `null`, and their JSON Pointers are
-    listed in `redactedPaths` (FR-2). Until retention exists, `archived` is always false.
+    Values no longer available render as `null`. An archived record renders every value as `null`,
+    even while its purge is in progress. `redactedPaths` lists only redaction-authorized pointers.
     """
-    record = entry.record
+    record = view.entry.record
     content = record.content
-    revealed = reveal_payload(content.payload, entry.payload_values)
+    stored: Mapping[str, PayloadValue] = {} if view.archived else view.entry.payload_values
+    revealed = reveal_payload(content.payload, stored)
     return AuditEvent(
         id=content.id,
         sequence=record.sequence,
@@ -76,8 +79,8 @@ def represent(entry: ChainEntry) -> dict[str, Any]:
         recordedAt=content.recorded_at,
         recordedBy=content.recorded_by,
         payload=revealed.payload,
-        redactedPaths=revealed.missing,
-        archived=False,
+        redactedPaths=view.redacted_paths,
+        archived=view.archived,
         contentHash=record.content_hash,
         previousHash=record.previous_hash,
         recordHash=record.record_hash,
@@ -148,3 +151,24 @@ def represent_verification(verification: ApplicationChainVerification) -> dict[s
             message=VIOLATION_MESSAGES[violation.type],
         ),
     ).model_dump()
+
+
+class RetentionRun(BaseModel):
+    """The result of a successful retention run (FR-5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["RETENTION_RECORDED", "PURGE_RESUMED", "NOTHING_ELIGIBLE"]
+    upToSequence: int | None
+    retentionEvent: AuditEvent | None
+    purgedValues: int
+
+
+def represent_retention(result: RetentionResult) -> dict[str, Any]:
+    event = result.retention_event
+    return {
+        "outcome": result.outcome.value,
+        "upToSequence": result.up_to_sequence,
+        "retentionEvent": None if event is None else represent(event),
+        "purgedValues": result.purged_values,
+    }

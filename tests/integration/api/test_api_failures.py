@@ -1,7 +1,9 @@
 """Failure handling: database unavailability, unexpected errors, startup checks, and logging."""
 
+import dataclasses
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -187,6 +189,20 @@ def test_redaction_with_unreachable_database_is_503(
         "/audit/events/00000000-0000-4000-8000-000000000000/redactions",
         json={"paths": ["/card"], "reason": "privacy"},
         headers=administrator,
+    )
+
+    assert _assert_problem(response, 503)["detail"] == "The service is temporarily unavailable."
+
+
+def test_retention_with_unreachable_database_is_503(
+    settings: Settings, make_client: MakeClient, administrator: Headers
+) -> None:
+    unreachable = create_engine(
+        "postgresql+psycopg://nobody@127.0.0.1:1/nothing", connect_args={"connect_timeout": 1}
+    )
+    configured = dataclasses.replace(settings, retention_window=timedelta(days=1))
+    response = make_client(create_app(configured, unreachable)).post(
+        "/audit/retention-runs", headers=administrator
     )
 
     assert _assert_problem(response, 503)["detail"] == "The service is temporarily unavailable."

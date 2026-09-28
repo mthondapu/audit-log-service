@@ -5,8 +5,8 @@ appends an `AUDIT_LOG_REDACTION` system event, atomically, under the append lock
 `contentHash`, and `recordHash` are never changed.
 
 Checks run in the approved order: request validation (422), target lookup (404), system-event
-target (409), pointer resolution (422), and nothing new to redact (409). Error messages identify a
-pointer by its position and never echo submitted pointers or reasons.
+or archived target (409), pointer resolution (422), and nothing new to redact (409). Error
+messages identify a pointer by its position and never echo submitted pointers or reasons.
 """
 
 import re
@@ -22,9 +22,10 @@ from audit_log_service.application.events import (
     describe_schema_errors,
     is_storable_text,
 )
+from audit_log_service.application.views import EventView, event_views
 from audit_log_service.integrity.canonical import JsonValue
 from audit_log_service.integrity.commitments import committed_pointers
-from audit_log_service.integrity.verification import REDACTION_EVENT_TYPE, ChainEntry
+from audit_log_service.integrity.verification import REDACTION_EVENT_TYPE
 from audit_log_service.persistence.audit_log import (
     NewEvent,
     acquire_append_lock,
@@ -32,6 +33,7 @@ from audit_log_service.persistence.audit_log import (
     delete_payload_values,
     load_entry,
 )
+from audit_log_service.persistence.retention import current_retention_boundary
 
 MAX_PATHS = 100
 MAX_REASON_LENGTH = 1000
@@ -77,7 +79,7 @@ def parse_redaction_request(document: object) -> RedactionRequest:
 
 def redact(
     connection: Connection, event_id: str, request: RedactionRequest, operator: str
-) -> ChainEntry:
+) -> EventView:
     """Redact in the caller's transaction and return the appended redaction event."""
     acquire_append_lock(connection)
     try:
@@ -90,6 +92,10 @@ def redact(
     content = target.record.content
     if content.event_type.startswith(RESERVED_EVENT_TYPE_PREFIX):
         raise RedactionConflictError("System events cannot be redacted.")
+    # Archived as soon as the covering retention event commits, even mid-purge (FR-6). The append
+    # lock is held, so no retention event can commit between this check and the deletion.
+    if target.record.sequence <= current_retention_boundary(connection):
+        raise RedactionConflictError("Archived records cannot be redacted.")
 
     leaves = committed_pointers(content.payload)
     covered: set[str] = set()
@@ -123,7 +129,7 @@ def redact(
     entry = load_entry(connection, uuid.UUID(record.content.id))
     if entry is None:
         raise RuntimeError("appended redaction event is not readable in its own transaction")
-    return entry
+    return event_views(connection, [entry])[0]
 
 
 def _covers(pointer: str, leaf: str) -> bool:

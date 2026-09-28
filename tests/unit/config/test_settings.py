@@ -10,6 +10,9 @@ from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import (
     API_KEYS_FILE_VARIABLE,
     DATABASE_URL_VARIABLE,
+    RETENTION_BATCH_SIZE_VARIABLE,
+    RETENTION_MAX_BATCHES_VARIABLE,
+    RETENTION_WINDOW_VARIABLE,
     TIMESTAMP_SKEW_VARIABLE,
     VOCABULARY_FILE_VARIABLE,
     load_settings,
@@ -77,3 +80,44 @@ def test_repr_does_not_expose_the_database_url(environ: dict[str, str]) -> None:
     text = repr(load_settings(environ))
     assert "test-only-password" not in text
     assert "audit_app" not in text
+
+
+def test_retention_is_disabled_by_default_with_default_bounds(environ: dict[str, str]) -> None:
+    settings = load_settings(environ)
+    assert settings.retention_window is None
+    assert (settings.retention_batch_size, settings.retention_max_batches) == (500, 20)
+
+
+def test_retention_settings_are_read(environ: dict[str, str]) -> None:
+    environ[RETENTION_WINDOW_VARIABLE] = "86400"
+    environ[RETENTION_BATCH_SIZE_VARIABLE] = "10000"
+    environ[RETENTION_MAX_BATCHES_VARIABLE] = "1"
+
+    settings = load_settings(environ)
+
+    assert settings.retention_window == timedelta(days=1)
+    assert (settings.retention_batch_size, settings.retention_max_batches) == (10_000, 1)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        (RETENTION_WINDOW_VARIABLE, "0"),
+        (RETENTION_WINDOW_VARIABLE, ""),
+        (RETENTION_WINDOW_VARIABLE, "-60"),
+        (RETENTION_WINDOW_VARIABLE, "1.5"),
+        (RETENTION_WINDOW_VARIABLE, "one day"),
+        (RETENTION_WINDOW_VARIABLE, str(100 * 365 * 24 * 60 * 60 + 1)),
+        (RETENTION_BATCH_SIZE_VARIABLE, "0"),
+        (RETENTION_BATCH_SIZE_VARIABLE, "10001"),
+        (RETENTION_MAX_BATCHES_VARIABLE, "0"),
+        (RETENTION_MAX_BATCHES_VARIABLE, "1001"),
+        (RETENTION_MAX_BATCHES_VARIABLE, chr(0x665)),
+    ],
+)
+def test_invalid_retention_settings_fail_fast(
+    environ: dict[str, str], variable: str, value: str
+) -> None:
+    environ[variable] = value
+    with pytest.raises(ConfigurationError, match=f"^{variable} must be a whole number from 1 to"):
+        load_settings(environ)

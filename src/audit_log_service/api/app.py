@@ -30,6 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from audit_log_service.api.errors import ApiProblem, problem_json, request_id_of
 from audit_log_service.api.events import router as events_router
 from audit_log_service.api.redactions import router as redactions_router
+from audit_log_service.api.retention import router as retention_router
 from audit_log_service.api.verification import router as verification_router
 from audit_log_service.application.events import EventSubmission
 from audit_log_service.application.redactions import RedactionRequest
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(events_router)
     app.include_router(verification_router)
     app.include_router(redactions_router)
+    app.include_router(retention_router)
     _install_error_handling(app)
     app.openapi = lambda: _openapi(app)  # type: ignore[method-assign]
     return app

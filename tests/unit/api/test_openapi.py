@@ -74,6 +74,7 @@ def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any])
         ("/audit/events/{id}", "get"),
         ("/audit/verify", "get"),
         ("/audit/events/{id}/redactions", "post"),
+        ("/audit/retention-runs", "post"),
     }
 
 
@@ -174,6 +175,32 @@ def test_redaction_documents_its_body_statuses_and_result(openapi: dict[str, Any
     )
     reason = body["properties"]["reason"]
     assert (reason["minLength"], reason["maxLength"]) == (1, 1000)
+
+
+def test_retention_documents_its_statuses_and_result(openapi: dict[str, Any]) -> None:
+    run = openapi["paths"]["/audit/retention-runs"]["post"]
+
+    assert "requestBody" not in run
+    assert "parameters" not in run
+    assert set(run["responses"]) == {"200", "201", "401", "403", "422", "503"}
+    assert _problem_codes(run["responses"]) == {"401", "403", "422", "503"}
+    assert "Location" in run["responses"]["201"]["headers"]
+    for code in ("200", "201"):
+        assert run["responses"][code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/RetentionRun"
+        }
+    result = openapi["components"]["schemas"]["RetentionRun"]
+    assert set(result["properties"]) == {
+        "outcome",
+        "upToSequence",
+        "retentionEvent",
+        "purgedValues",
+    }
+    assert result["properties"]["outcome"]["enum"] == [
+        "RETENTION_RECORDED",
+        "PURGE_RESUMED",
+        "NOTHING_ELIGIBLE",
+    ]
 
 
 def test_get_documents_its_statuses(openapi: dict[str, Any]) -> None:

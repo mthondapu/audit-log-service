@@ -33,12 +33,15 @@ The service reads its configuration from the environment once, at startup, and r
 | `AUDIT_LOG_API_KEYS_FILE` | API-key configuration (see `config/api-keys.example.toml`) |
 | `AUDIT_LOG_VOCABULARY_FILE` | Scenario C vocabulary (see `config/client-account-vocabulary.example.toml`) |
 | `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS` | Optional; how far a caller `timestamp` may be ahead of `recordedAt` (default 300) |
+| `AUDIT_LOG_RETENTION_WINDOW_SECONDS` | Optional; records older than this are archived by a retention run. Unset disables retention |
+| `AUDIT_LOG_RETENTION_BATCH_SIZE` | Optional; payload values purged per batch (default 500) |
+| `AUDIT_LOG_RETENTION_MAX_BATCHES` | Optional; batches per retention run before it stops with `503` and leaves the rest for the next run (default 20) |
 
 ```sh
 uv run uvicorn audit_log_service.api.app:create_app --factory
 ```
 
-Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, and `POST /audit/events/{id}/redactions`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, and `POST /audit/retention-runs`. The OpenAPI document is served at `/openapi.json` and `/docs`.
 
 ## Redaction guidance for operators
 

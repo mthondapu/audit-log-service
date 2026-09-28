@@ -17,7 +17,7 @@ Sensitive payload values must be removable without rewriting the original record
   - Nothing new, an archived target, or a **system-event target** returns `409`.
   - Invalid or nonexistent pointers return `422`, identified by position.
   - The redaction event inherits `actorId`, `resourceType`, and `resourceId` from the target, and `recordedBy` is the operator.
-- **Verification.** A missing value is authorized only by a covering valid retention event or a later valid reserved redaction event that names the target and covers the pointer. Otherwise it is reported as `PAYLOAD_VALUE_MISSING`, identified only by `sequence` and `recordId`. Since Phase 8 the verifier reports `PAYLOAD_VALUE_MISSING` and accepts a later `AUDIT_LOG_REDACTION` event with no violation or missing value of its own as authorization; authorization by retention is added with retention.
+- **Verification.** A missing value is authorized only by a covering valid retention event or a later valid reserved redaction event that names the target and covers the pointer. Otherwise it is reported as `PAYLOAD_VALUE_MISSING`, identified only by `sequence` and `recordId`. Since Phase 8 the verifier reports `PAYLOAD_VALUE_MISSING` and accepts a later `AUDIT_LOG_REDACTION` event with no violation or missing value of its own as authorization; since Phase 9 a valid `AUDIT_LOG_RETENTION` event also authorizes the missing values of every record at or below its `upToSequence`.
 
 ## Consequences
 

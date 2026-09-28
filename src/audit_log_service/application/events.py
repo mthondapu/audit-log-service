@@ -18,11 +18,11 @@ from typing import Annotated, Any, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import Connection
 
+from audit_log_service.application.views import EventView, event_views
 from audit_log_service.config.vocabulary import ClientAccountVocabulary
 from audit_log_service.integrity.canonical import JsonValue, canonicalize
 from audit_log_service.integrity.errors import IntegrityInputError
 from audit_log_service.integrity.timestamps import format_timestamp, parse_timestamp
-from audit_log_service.integrity.verification import ChainEntry
 from audit_log_service.persistence.audit_log import NewEvent, append_event, load_entry
 
 TYPE_PATTERN = r"^[A-Z][A-Z0-9_]{0,63}$"
@@ -90,7 +90,7 @@ def prepare_event(
     )
 
 
-def record_event(connection: Connection, event: NewEvent, skew: timedelta) -> ChainEntry:
+def record_event(connection: Connection, event: NewEvent, skew: timedelta) -> EventView:
     """Append the event in the caller's transaction and return it as stored.
 
     A caller `timestamp` more than `skew` ahead of the database-assigned `recordedAt` is rejected
@@ -105,16 +105,17 @@ def record_event(connection: Connection, event: NewEvent, skew: timedelta) -> Ch
     entry = load_entry(connection, uuid.UUID(record.content.id))
     if entry is None:
         raise RuntimeError("appended record is not readable in its own transaction")
-    return entry
+    return event_views(connection, [entry])[0]
 
 
-def find_event(connection: Connection, event_id: str) -> ChainEntry | None:
+def find_event(connection: Connection, event_id: str) -> EventView | None:
     """Return the stored event, or None when the identifier is not a UUID or no event has it."""
     try:
         record_id = uuid.UUID(event_id)
     except ValueError:
         return None
-    return load_entry(connection, record_id)
+    entry = load_entry(connection, record_id)
+    return None if entry is None else event_views(connection, [entry])[0]
 
 
 def canonical_time(text: str, field: str = "timestamp") -> str:

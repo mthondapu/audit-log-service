@@ -20,7 +20,8 @@ serializes writers. The integrity core computes every hash, commitment, and cano
 
 import json
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
@@ -29,6 +30,7 @@ from typing import Any
 from sqlalchemy import (
     ColumnElement,
     Connection,
+    Engine,
     Select,
     Text,
     and_,
@@ -139,6 +141,17 @@ def append_event(connection: Connection, event: NewEvent) -> AuditRecord:
     return record
 
 
+@contextmanager
+def read_only_snapshot(engine: Engine) -> Generator[Connection]:
+    """A REPEATABLE READ, READ ONLY transaction, so several reads see one snapshot."""
+    with engine.connect() as connection:
+        snapshot = connection.execution_options(
+            isolation_level="REPEATABLE READ", postgresql_readonly=True
+        )
+        with snapshot.begin():
+            yield snapshot
+
+
 def acquire_append_lock(connection: Connection) -> None:
     """Take the append lock for the rest of the caller's transaction (re-entrant within it).
 
@@ -189,7 +202,7 @@ def load_entry(connection: Connection, record_id: uuid.UUID) -> ChainEntry | Non
 class EventFilters:
     """Exact-match filters and the half-open `recordedAt` range, combined with AND (FR-2).
 
-    `include_archived` has no effect yet: no record is archived until retention is implemented.
+    Unless `include_archived` is true, records at or below the archived boundary are excluded.
     """
 
     actor_id: str | None = field(default=None, repr=False)
@@ -202,14 +215,21 @@ class EventFilters:
 
 
 def query_entries(
-    connection: Connection, filters: EventFilters, after_sequence: int, limit: int
+    connection: Connection,
+    filters: EventFilters,
+    after_sequence: int,
+    limit: int,
+    archived_boundary: int = 0,
 ) -> list[ChainEntry]:
     """Return up to `limit` matching records with `sequence > after_sequence`, in sequence order.
 
     Keyset pagination: one statement selects the page of records and joins their values, so the
     page reflects a single snapshot. Read-only; the append lock is not taken.
     """
-    conditions: list[ColumnElement[bool]] = [audit_records.c.sequence > after_sequence]
+    lowest_excluded = (
+        after_sequence if filters.include_archived else max(after_sequence, archived_boundary)
+    )
+    conditions: list[ColumnElement[bool]] = [audit_records.c.sequence > lowest_excluded]
     if filters.actor_id is not None:
         conditions.append(audit_records.c.actor_id == filters.actor_id)
     if filters.event_type is not None:

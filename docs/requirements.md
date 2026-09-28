@@ -137,7 +137,7 @@ The API definition (Phase 6, developer decisions Q1–Q3) sets the query contrac
 - query parameters: `from`, `to`, `actorId`, `eventType`, `resourceType`, `resourceId`, `includeArchived`, `limit`, and `cursor`; any other parameter, or a repeated one, is rejected with `422`;
 - `from` and `to` are RFC 3339 date-times with a UTC offset, validated as for append; `from` later than `to` is rejected with `422`, and `from` equal to `to` returns an empty page;
 - `actorId` and `resourceId` are 1 to 256 characters; `eventType` and `resourceType` match the append pattern; each is an exact match;
-- `includeArchived` is `true` or `false`; until retention is implemented no record is archived, so it has no observable effect;
+- `includeArchived` is `true` or `false`; `false` excludes records at or below the archived boundary (FR-5);
 - `limit` is the page size (default 50, 1 to 200);
 - the response is `{"items": [...], "nextCursor": ...}`, where each item is the record representation above and `nextCursor` is `null` on the last page; and
 - the cursor is opaque. It records the last returned `sequence` and a digest of the filter set (every parameter except `limit` and `cursor`), so the page size may change between pages but the filters may not. A malformed cursor, or one used with different filters, is rejected with `422`. Cursors are neither stored nor expired.
@@ -156,7 +156,7 @@ Record representation (design decision, Focused Discussion #3). In every respons
 - `redactedPaths` lists the JSON Pointers (RFC 6901) of redacted values, and is empty when none are redacted, so that a redacted value is distinguishable from a genuine JSON `null`; and
 - `archived` indicates whether the record is archived, meaning it is covered by a committed retention event; its payload values are no longer available, even if bounded physical purge work is still in progress or will resume in a later run (FR-5).
 
-Until redaction and retention are implemented, every record is returned with `redactedPaths` `[]` and `archived` `false` (Phase 5, developer decision C2). `redactedPaths` and `archived` are derived response fields. They are not covered by any integrity hash (NFR-1). Because `redactedPaths` is derived from which values are missing, a value removed without authorization would also appear in it; verification (FR-3), not the response representation, determines whether a removal was legitimate.
+`redactedPaths` and `archived` are derived response fields. They are not covered by any integrity hash (NFR-1). Since Phase 9 (developer decisions 7 and 8): `archived` is true from the moment a retention event covering the record commits, and an archived record renders every payload value as `null`, even while its purge is still in progress; `redactedPaths` lists the pointers named by the readable redaction events for the record, never values missing only because retention purged them, or removed without authorization. Verification (FR-3), not the response representation, determines whether a removal was legitimate. Because retention keeps each redaction event's `targetId` and `paths` values (FR-5), `redactedPaths` stays complete after both a record and its redaction events are archived, including while a purge is in progress.
 
 ### FR-3 — Verify Audit History
 
@@ -197,7 +197,7 @@ The v1 verification response shall contain:
 
 Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. The mechanics of `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` are deferred to the checkpoint implementation (FR-4), together with the checkpoint format, trusted-anchor lifecycle, and signature semantics.
 
-`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. Since Phase 8 it is reported with the fixed message below, and it ranks immediately after `PAYLOAD_VALUE_MISMATCH`. A redaction event authorizes a missing value when it is a later `AUDIT_LOG_REDACTION` event with no violation of its own and no missing values, whose `targetId` is the record and whose `paths` list the value's pointer. Authorization by retention (rule 1 below) is implemented with retention (FR-5).
+`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. Since Phase 8 it is reported with the fixed message below, and it ranks immediately after `PAYLOAD_VALUE_MISMATCH`. A redaction event authorizes a missing value when it is a later `AUDIT_LOG_REDACTION` event with no violation of its own and no missing values, whose `targetId` is the record and whose `paths` list the value's pointer. Since Phase 9, a retention event authorizes (rule 1 below) when it has no violation of its own in the first verification pass, its `eventType` is `AUDIT_LOG_RETENTION`, and its `upToSequence` is readable as an integer with `1 <= upToSequence < ` its own `sequence`; it then covers every record whose `sequence` is at most `upToSequence`. Its other values may be missing, because a later retention event can archive it.
 
 Missing-value authorization rule (approved in principle, Focused Discussion #4). A missing payload value is authorized when:
 
@@ -242,7 +242,7 @@ The API definition (Phase 7, developer decisions D1 to D4):
 
 - the endpoint takes no query parameters; any query parameter, unknown or repeated, is rejected with `422`.
 
-Until checkpoints are implemented, verification does not detect truncation of the newest records or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`). Modification, deletion, insertion, and reordering of records, changed payload values, and (since Phase 8) payload values deleted without an authorizing redaction are detected. Until retention is implemented, no retention event can authorize a missing value.
+Until checkpoints are implemented, verification does not detect truncation of the newest records or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`). Modification, deletion, insertion, and reordering of records, changed payload values, and (since Phase 8) payload values deleted without an authorizing redaction are detected.
 
 ### FR-4 — Integrity Anchoring / Checkpoints
 
@@ -301,10 +301,19 @@ Retention model (design decision, Focused Discussion #3):
   - `422` for an invalid request, configuration, or input; and
   - `503` when the configured execution bound prevents completion. Committed work remains, and a later run resumes the purge.
 
-  The response schema is not final.
 - **Configuration and authorization.** The retention window, the purge batch size, and the execution bound are configurable; their values are implementation details. Scheduling is future work. Retention requires the `retention:run` capability (NFR-2), and the authenticated operator principal is recorded in `recordedBy`.
 
 Archived-record visibility and representation are defined in FR-2.
+
+The API definition (Phase 9, developer decisions):
+
+- **Retention event.** `eventType` `AUDIT_LOG_RETENTION`, payload `{"cutoff": <canonical timestamp>, "upToSequence": <integer>}`, `timestamp` null, fixed server-defined identity (`actorId` `audit-log-service`, `resourceType` `AUDIT_LOG`, `resourceId` `audit-log`), and the operator as `recordedBy`.
+- **Request.** No body and no query parameters; either is rejected with `422`.
+- **Configuration.** `AUDIT_LOG_RETENTION_WINDOW_SECONDS` (optional, 1 second to 100 years; when unset, retention is disabled and a run is rejected with `422` "Retention is not configured."), `AUDIT_LOG_RETENTION_BATCH_SIZE` (payload-value rows per batch, default 500, at most 10,000), and `AUDIT_LOG_RETENTION_MAX_BATCHES` (the execution bound, batches per run, default 20, at most 1,000). Invalid values fail startup.
+- **Eligibility.** `cutoff` is the database clock minus the window. The eligible block is the oldest contiguous run of records with `recordedAt < cutoff`; it ends before the first record at or after the cutoff. The boundary never moves back: a run whose eligible block does not reach past the current boundary appends no event.
+- **Execution.** Under the append lock, the run determines the cutoff and eligible block and, for a new boundary, appends the retention event. It then purges the payload values of records at or below the boundary in batches, each its own transaction under the append lock, up to the execution bound.
+- **Kept redaction evidence (Phase 9 follow-up, developer decision).** The purge keeps the `/targetId` and `/paths/*` values of `AUDIT_LOG_REDACTION` events, the evidence behind `redactedPaths`, and purges every other value, including the redaction `reason`. The kept values remain commitment-protected and verified, never make a run unfinished, and are kept by every later run. No record or hash is rewritten, and the redaction event schema is unchanged.
+- **Response.** `{"outcome": "RETENTION_RECORDED" | "PURGE_RESUMED" | "NOTHING_ELIGIBLE", "upToSequence": <integer or null when there is no boundary>, "retentionEvent": <the event's representation or null>, "purgedValues": <values deleted by this run>}`, with `201` and `Location` for `RETENTION_RECORDED` and `200` otherwise. A run stopped by its execution bound returns `503` Problem Details; its committed work remains and a later run resumes the purge without another event.
 
 ### FR-6 — Redaction
 
@@ -362,7 +371,7 @@ The API definition (Phase 8, developer decisions):
 - the redaction event has `eventType` `AUDIT_LOG_REDACTION`, `timestamp` null, the target's `actorId`, `resourceType`, and `resourceId`, the operator as `recordedBy`, and the payload `{"targetId": <target id>, "paths": [<pointers of the values actually redacted, sorted>], "reason": <reason>}`; and
 - the redaction runs in one transaction under the append lock: target lookup, value resolution, deletion of the covered values and salts, and the append of the redaction event. `contentHash` and `recordHash` are never rewritten.
 
-No record is archived until retention (FR-5) is implemented, so the archived-target rule has nothing to reject yet.
+Since Phase 9, an archived target is rejected with `409` "Archived records cannot be redacted.", checked after the system-event rule and under the append lock, so it applies even while the retention purge is in progress.
 
 Redaction security (design decision, Focused Discussion #4):
 
@@ -880,11 +889,10 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
   - whether checkpoint and export signing keys are separate;
   - the production key lifecycle, storage, and distribution.
 - **Implementation planning:**
-  - how retention events identify their resource, and the retention response schema;
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the access-event vocabulary names;
   - configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation, and the environment-variable names, are decided in ADR-0008);
-  - retention batch size and execution bound, export size limit, and reason length.
+  - export size limit.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 
 Scenario C remains open to stakeholder clarification regarding its business meaning and production requirements; the prototype proceeds using the documented developer assumptions and implementation boundary.

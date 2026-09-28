@@ -8,12 +8,14 @@ When several violations apply to one record, the first in `ViolationType` order 
 Malformed stored hashes count as a mismatch of that hash. Results never contain payload values,
 salts, payload keys, `actorId`, `resourceId`, or `recordedBy`.
 
-A missing payload value is `PAYLOAD_VALUE_MISSING` unless a later, valid `AUDIT_LOG_REDACTION`
-event names the record and lists that value's pointer (requirements FR-3, FR-6). Authorization by
-retention, and `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (with checkpoints), are not implemented yet;
-tail truncation is not detectable by this verifier alone.
+A missing payload value is `PAYLOAD_VALUE_MISSING` unless it is authorized (requirements FR-3):
+by a later, valid `AUDIT_LOG_REDACTION` event that names the record and lists the value's pointer
+(FR-6), or by a valid `AUDIT_LOG_RETENTION` event whose `upToSequence` covers the record (FR-5).
+`ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (with checkpoints) are not implemented yet; tail truncation
+is not detectable by this verifier alone.
 """
 
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -37,6 +39,7 @@ from audit_log_service.integrity.hashing import (
 from audit_log_service.integrity.timestamps import parse_timestamp
 
 REDACTION_EVENT_TYPE = "AUDIT_LOG_REDACTION"
+RETENTION_EVENT_TYPE = "AUDIT_LOG_RETENTION"
 
 
 class ViolationType(StrEnum):
@@ -102,6 +105,7 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
         predecessor = entry.record
 
     authorized = _redaction_authorizations(ordered, checked)
+    retained_up_to = _retention_coverage(ordered, checked)
     violation_count = 0
     first_violation: Violation | None = None
     for entry, violation_type in zip(ordered, checked, strict=True):
@@ -110,7 +114,11 @@ def verify_chain(entries: Iterable[ChainEntry]) -> VerificationResult:
         outranks_missing = violation_type is not None and (
             _PRECEDENCE.index(violation_type) < _MISSING_RANK
         )
-        if not outranks_missing and _has_unauthorized_missing_value(entry, authorized):
+        if (
+            not outranks_missing
+            and record.sequence > retained_up_to
+            and _has_unauthorized_missing_value(entry, authorized)
+        ):
             violation_type = ViolationType.PAYLOAD_VALUE_MISSING
         if violation_type is not None:
             violation_count += 1
@@ -158,6 +166,27 @@ def _redaction_authorizations(
             key = (target_id, pointer)
             authorized[key] = max(authorized.get(key, 0), record.sequence)
     return authorized
+
+
+def _retention_coverage(entries: list[ChainEntry], checked: list[ViolationType | None]) -> int:
+    """The highest `upToSequence` of a valid retention event, or 0.
+
+    A retention event authorizes the missing values of every record at or below its readable
+    `upToSequence`, which must be an integer from 1 to just below its own sequence. It needs no
+    other value of its own: a later retention event may have archived it.
+    """
+    covered = 0
+    for entry, violation_type in zip(entries, checked, strict=True):
+        record = entry.record
+        if violation_type is not None or record.content.event_type != RETENTION_EVENT_TYPE:
+            continue
+        stored = entry.payload_values.get("/upToSequence")
+        if stored is None:
+            continue
+        up_to: object = json.loads(stored.canonical_text)
+        if type(up_to) is int and 1 <= up_to < record.sequence:
+            covered = max(covered, up_to)
+    return covered
 
 
 def _redaction_payload(entry: ChainEntry) -> tuple[str, list[str]] | None:

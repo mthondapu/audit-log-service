@@ -28,10 +28,11 @@ from audit_log_service.application.events import (
     canonical_time,
     is_storable_text,
 )
+from audit_log_service.application.views import EventView, event_views
 from audit_log_service.integrity.canonical import MAX_SAFE_INTEGER, JsonValue, canonicalize
 from audit_log_service.integrity.timestamps import parse_timestamp
-from audit_log_service.integrity.verification import ChainEntry
 from audit_log_service.persistence.audit_log import EventFilters, query_entries
+from audit_log_service.persistence.retention import current_retention_boundary
 
 QUERY_PARAMETERS = (
     "from",
@@ -66,7 +67,7 @@ class EventQuery:
 
 @dataclass(frozen=True, slots=True)
 class EventPage:
-    entries: list[ChainEntry]
+    events: list[EventView]
     next_cursor: str | None
 
 
@@ -118,13 +119,17 @@ def parse_query(parameters: Sequence[tuple[str, str]]) -> EventQuery:
 
 def run_query(connection: Connection, query: EventQuery) -> EventPage:
     """Fetch one page. One extra record is read to tell whether another page exists."""
-    entries = query_entries(connection, query.filters, query.after_sequence, query.limit + 1)
-    if len(entries) <= query.limit:
-        return EventPage(entries=entries, next_cursor=None)
-    page = entries[: query.limit]
-    return EventPage(
-        entries=page, next_cursor=encode_cursor(page[-1].record.sequence, query.filter_digest)
+    boundary = current_retention_boundary(connection)
+    entries = query_entries(
+        connection, query.filters, query.after_sequence, query.limit + 1, archived_boundary=boundary
     )
+    page = entries[: query.limit]
+    next_cursor = (
+        encode_cursor(page[-1].record.sequence, query.filter_digest)
+        if len(entries) > query.limit
+        else None
+    )
+    return EventPage(events=event_views(connection, page, boundary), next_cursor=next_cursor)
 
 
 def encode_cursor(after_sequence: int, filter_digest: str) -> str:

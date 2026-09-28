@@ -1877,3 +1877,171 @@ atomicity, partial and repeated redaction, the reason rules, HTTP statuses, and 
 
 **Sign-off:** I gave the Phase 8 decisions recorded above. My review and sign-off of the Phase 8 implementation are
 pending.
+
+### 2026-09-28 — Phase 9: retention
+
+**Date/Time:** 2026-09-28, from 20:55 UTC (from session timestamps: Phase 9 planning requested at 20:55;
+implementation decisions approved at 20:58 and resubmitted unchanged at 20:59 after an interruption).
+
+**Activity:** Developer-led, AI-assisted planning and implementation of FR-5 retention, with archived representation,
+retention authorization of missing values, and the archived-target redaction rule.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude produced a read-only Phase 9 plan, which found four conflicts or ambiguities:
+
+- FR-5's "`422` for invalid configuration" versus fail-fast startup;
+- archived rendering during a purge, and the meaning of `redactedPaths`;
+- the validity of older retention events whose own values are purged;
+- boundary monotonicity.
+
+**Previously approved requirements:** FR-5 and ADR-0005 (payload purge, retention events, the archived boundary from
+the latest applicable event, a synchronous bounded run under the append lock, resumable purge, `201`/`200`/`503`,
+`retention:run`, no runs table), FR-2 (archived visibility and `includeArchived`), FR-3 rule 1, and FR-6 (archived
+targets not redactable).
+
+**My decisions:**
+
+1. **Retention event:** `AUDIT_LOG_RETENTION`, with payload `{cutoff, upToSequence}`, `timestamp` null, fixed
+   identity (`audit-log-service`, `AUDIT_LOG`, `audit-log`), and the operator as `recordedBy`.
+2. **Response:** one success shape `{outcome, upToSequence, retentionEvent, purgedValues}`; `201` with `Location` for
+   a new event whose purge completed; `200` otherwise; `503` Problem Details when the execution bound is reached.
+3. **Request:** no body and no query parameters.
+4. **Configuration:** `AUDIT_LOG_RETENTION_WINDOW_SECONDS` (optional; unset means disabled, `422`),
+   `AUDIT_LOG_RETENTION_BATCH_SIZE` (default 500), and `AUDIT_LOG_RETENTION_MAX_BATCHES` (default 20); invalid values
+   fail at startup.
+5. **Eligibility:** `recordedAt < cutoff`, and the boundary never moves back.
+6. **Execution:** under the append lock, with purge batches serialized.
+7. **Archived semantics:** a record is archived from the moment its retention event commits, and all its values
+   render `null`.
+8. **`redactedPaths`:** redaction-authorized pointers only.
+9. **Verification:** the retention-event validity rule; older retention events may themselves have missing values.
+10. **Redaction:** an archived target is `409` "Archived records cannot be redacted.", after the system-event check.
+11. **Scope:** chain immutability; `retention:run` only; the approved statuses and exclusions.
+
+**What the AI implemented:**
+
+- `config/settings.py`: the three retention settings, with startup bounds (window 1 second to 100 years; batch size
+  1–10,000; batches 1–1,000).
+- `integrity/verification.py`:
+  - a `RETENTION_EVENT_TYPE` constant;
+  - retention coverage: the highest `upToSequence` among pass-1-valid `AUDIT_LOG_RETENTION` events whose value is a
+    readable integer with `1 <= upToSequence < ` their own sequence;
+  - missing values at or below that boundary are authorized.
+
+  Precedence, violation types, and hashing are unchanged.
+- `persistence/retention.py`:
+  - the applicable boundary (the latest retention event with a valid `upToSequence`);
+  - the eligible contiguous block (ending before the first record at or after the cutoff);
+  - bounded `purge_batch`, which deletes only from `audit_payload_values`, and the unpurged check;
+  - redaction paths by target, read from redaction events.
+- `persistence/audit_log.py`: `read_only_snapshot`; `query_entries` excludes records at or below the boundary unless
+  `includeArchived` is true.
+- `application/views.py`: `EventView`, which attaches the archived flag and the redaction-authorized paths.
+- `application/retention.py`: `run_retention`, where one transaction under the lock appends the event only for a new
+  boundary, followed by purge batches each under the lock, with the outcomes and `503`.
+- `api/retention.py`, `api/schemas.py` (`RetentionRun`, and `represent` rendering views), and `api/app.py`.
+- `application/events.py`, `application/queries.py`, `application/redactions.py`, and `api/events.py`:
+  - return views;
+  - `GET` and the query endpoint read in one read-only snapshot;
+  - redaction adds the archived `409`.
+
+**Implementation interpretations** (for my review):
+
+- The eligible block ends before the first record at or after the cutoff, which keeps archived records contiguous
+  even if tampering disordered `recordedAt`.
+- The representation's boundary skips a latest retention event whose `upToSequence` is not a valid integer below its
+  own sequence.
+- Configuration bounds: window 1 second to 100 years; batch size up to 10,000; up to 1,000 batches per run.
+
+**Discovered limitation (documented):** once retention purges a redaction event's own values, its paths can no
+longer be read, so a fully archived record's `redactedPaths` may become empty. Verification is unaffected, because
+retention then authorizes those values.
+
+**Tests (82 new, 957 in total):**
+
+- **Unit (49):**
+  - settings (13);
+  - retention authorization in the verifier (19), including invalid `upToSequence` forms, a tampered or unreadable
+    event, an older retention event archived by a newer one, and a Hypothesis property over interleavings of appends,
+    redactions, and retention;
+  - `upToSequence` parsing (12);
+  - archived representation (4);
+  - OpenAPI (1).
+- **API integration against real PostgreSQL (33):**
+  - disabled retention; `401` and `403`; request validation;
+  - all outcomes; no duplicate event; monotonicity;
+  - `503` with resume, and a purge that exactly fills its bound;
+  - mid-purge rendering, verification, and redaction rejection;
+  - `includeArchived` and cursor binding;
+  - redaction paths kept through archiving;
+  - older retention and redaction events archived;
+  - tampering: an unauthorized deletion above the boundary; a tampered event; a forged invalid event; tampered
+    redaction paths;
+  - no record or hash changes;
+  - concurrent runs, and retention concurrent with redaction (both repeated five times);
+  - strict cutoff and contiguity;
+  - the internal-consistency `500`;
+  - `503` when the database is unreachable.
+
+**Documentation updates:**
+
+- `requirements.md`: the FR-5 API definition; FR-2 on archived rendering and the `redactedPaths` meaning; the FR-3
+  retention rule; FR-6 on the archived `409`; the resolved §13 items.
+- `architecture.md`: §5, §9, §21.
+- ADR-0002, ADR-0004, and ADR-0005 (the implementation section), and ADR-0008 (the environment variables).
+- `README.md`.
+
+**Limitations:**
+
+- No scheduling, physical deletion, checkpoints, or export.
+- The redaction-paths limitation above.
+- The `httpx2` warning remains.
+- §13 still lists "reason length", which Phase 8 decided; it was left unchanged here as unrelated.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `pytest --cov` reported 957 passed (654 unit, 302 integration, and 1 package test), with 100% statement and branch
+  coverage and no exclusions.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Follow-up: keeping redaction evidence (before staging Phase 9).**
+
+- **Analysis.** At my request Claude analyzed the reported `redactedPaths` limitation, read-only. It concluded that the
+  paths cannot be preserved within all of my constraints: the only readable copy is the redaction event's stored
+  values, and the committed structure holds only salted commitments. It compared four options:
+  - A: accept the limitation;
+  - B: exempt the redaction evidence from the purge;
+  - C: move the paths into the structure by changing the Phase 8 event schema;
+  - D: copy the evidence into the retention event.
+
+  It recommended B.
+- **My decision.** I approved Option B.
+- **What the AI changed:**
+  - `persistence/retention.py`: `purge_batch` and `has_unpurged_values` share a `_KEPT_REDACTION_EVIDENCE` exclusion,
+    so an `AUDIT_LOG_REDACTION` event's `/targetId` and `/paths/*` values are never purged and never make a run
+    unfinished. `/reason` and every other value are purged as before. No application, verification, schema, or event
+    schema change.
+  - `requirements.md`: FR-5 (the kept-evidence rule), FR-2 (the limitation sentence replaced by the guarantee), and
+    §13 (the stale "reason length" item removed; Phase 8 set 1–1000 characters).
+  - ADR-0005: the evidence-preservation exception.
+- **Tests:**
+  - the previously pinned limitation test now expects `redactedPaths` kept, and only the two evidence rows left at
+    or below the boundary;
+  - a new integration test shows a complete `redactedPaths` mid-purge, the reason purged, kept rows never counted as
+    unfinished (a resumed run completes, then `NOTHING_ELIGIBLE`), a later boundary still keeping the evidence,
+    archived rendering all `null`, and tampering with a kept value detected as `PAYLOAD_VALUE_MISMATCH`;
+  - a new unit test shows kept evidence with a purged reason verifying intact.
+
+  The concurrency tests were repeated three times.
+
+**Sign-off:** I gave the Phase 9 decisions and the Option B follow-up decision recorded above. My review and sign-off
+of the Phase 9 implementation are pending.

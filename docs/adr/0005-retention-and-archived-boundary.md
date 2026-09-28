@@ -22,6 +22,12 @@ Records older than a configurable window must be archivable without verification
   - It returns `503 Service Unavailable` when a valid run cannot complete because the configured operational bound prevents it. Committed work is kept, and later runs resume the purge.
 - **No asynchronous job infrastructure** and no scheduling in the prototype.
 
+## Implementation (Phase 9)
+
+The retention event schema, request and response contract, configuration, eligibility, and execution are recorded in requirements FR-5 (API definition). In brief: the boundary is derived from the latest retention event whose `upToSequence` is a valid integer below its own sequence; archived records render every value as `null` from the moment their retention event commits; purge batches run under the append lock; and verification accepts a valid retention event as authorization for the missing values it covers.
+
+**Evidence-preservation exception (Phase 9 follow-up, developer decision).** Retention archives redaction events like any other record but keeps their stored `/targetId` and `/paths/*` values; the `reason` and all other values are purged. Without this, purging a redaction event would erase the only readable record of which paths were redacted, and `redactedPaths` of fully archived records would become incomplete. The kept values are a record identifier and JSON Pointers built from payload keys, which remain visible in the committed structure anyway; they stay commitment-protected and are verified like any other stored value.
+
 ## Consequences
 
 - Verification always runs from genesis; purged values are authorized by the retention boundary.

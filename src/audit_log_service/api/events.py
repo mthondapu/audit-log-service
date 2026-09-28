@@ -32,6 +32,7 @@ from audit_log_service.application.queries import (
     run_query,
 )
 from audit_log_service.config.settings import Settings
+from audit_log_service.persistence.audit_log import read_only_snapshot
 from audit_log_service.problem_details import (
     authentication_failure,
     authorization_failure,
@@ -127,7 +128,7 @@ _QUERY_PARAMETERS = {
         _query_parameter("resourceId", "Exact match, across resource types", _TEXT_FILTER),
         _query_parameter(
             "includeArchived",
-            "Include archived records (no record is archived until retention exists)",
+            "Include records at or below the archived boundary (default false)",
             {"type": "boolean", "default": False},
         ),
         _query_parameter(
@@ -163,10 +164,10 @@ async def query_audit_events(request: Request) -> JSONResponse:
         raise ApiProblem(problem(422, str(error), request_id_of(request))) from None
 
     def load() -> dict[str, Any]:
-        with request.app.state.engine.connect() as connection:
+        with read_only_snapshot(request.app.state.engine) as connection:
             page = run_query(connection, query)
         return {
-            "items": [represent(entry) for entry in page.entries],
+            "items": [represent(view) for view in page.events],
             "nextCursor": page.next_cursor,
         }
 
@@ -184,7 +185,7 @@ async def get_audit_event(request: Request, id: str) -> JSONResponse:
     authorize_request(request, settings, Capability.EVENTS_READ)
 
     def load() -> dict[str, Any] | None:
-        with request.app.state.engine.connect() as connection:
+        with read_only_snapshot(request.app.state.engine) as connection:
             entry = find_event(connection, id)
         return None if entry is None else represent(entry)
 
