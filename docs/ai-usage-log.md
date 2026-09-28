@@ -797,3 +797,68 @@ No application code, dependencies, or diagrams were changed.
 
 **Sign-off:** I approved D4-a to D4-d and the FR-6 cleanup on 2026-09-28 at 14:50 UTC. My review of the resulting
 documentation changes is pending.
+
+### 2026-09-28 — Phase 0: project scaffolding
+
+**Date/Time:** 2026-09-28, 15:03–15:08 UTC (from session timestamps: Phase 0 requested at 15:03; review decisions
+given at 15:08).
+
+**Activity:** Developer-led, AI-assisted project scaffolding and tooling. No application or business functionality.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to create the minimum Python project structure using the approved stack, with
+uv, Python 3.13, and tooling configuration. I excluded the RFC 8785 library, `cryptography`, `pydantic-settings`,
+and YAML, and anything beyond scaffolding.
+
+**What the AI produced:**
+
+- `pyproject.toml`, containing:
+  - runtime dependencies `fastapi`, `uvicorn`, `pydantic` (<3), `sqlalchemy` (<3), `alembic`, and
+    `psycopg[binary]` (<4);
+  - a dev group with `pytest`, `pytest-cov`, `hypothesis`, `httpx`, `ruff`, `pyright`, `bandit`, and `pip-audit`;
+  - the `uv_build` backend;
+  - Ruff configuration (excluding Markdown, so documentation code blocks are not reformatted), strict Pyright,
+    pytest, coverage (branch, no threshold), and Bandit.
+- `uv.lock` and `.python-version` (3.13).
+- A `src/audit_log_service` package containing only a docstring.
+- A single package-import smoke test.
+- `compose.yaml`: a local PostgreSQL service bound to localhost. The password must come from the environment and
+  fails if unset.
+- `.env.example`, with an empty password.
+- `.gitignore` safety-net rules for real API-key configuration, demo credentials, key material, and local secrets.
+
+**What I decided:**
+
+- Approved: the package name `audit_log_service`; `psycopg[binary]` for the prototype; the `.gitignore` patterns
+  (which do not finalize the deferred D3 paths); the smoke test; no coverage threshold yet.
+- Modified: the Compose configuration now uses the neutral default `postgres` user instead of a name implying the
+  deferred database role design. It remains bound to localhost.
+
+**Rationale:** Establish a minimal, validated toolchain on the approved stack without pre-empting deferred
+decisions or dependency gates.
+
+**Result:**
+
+- Created `pyproject.toml`, `uv.lock`, `.python-version`, `src/audit_log_service/__init__.py`,
+  `tests/test_package.py`, `compose.yaml`, and `.env.example`.
+- Modified `.gitignore` and this log.
+- No endpoints, authentication, authorization, schema, migrations, integrity code, or configuration loader were
+  implemented.
+- No credentials or usable secrets were created.
+
+**Validation (performed by Claude, results as observed):**
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` reported 0 errors.
+- `pytest --cov` reported 1 passed.
+- `bandit` found no issues.
+- `pip-audit` on the locked requirements found no known vulnerabilities.
+- `docker compose config --quiet` passed with a dummy password, and failed as intended without one.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I reviewed the scaffold and gave the decisions above on 2026-09-28 at 15:08 UTC. My review of the
+final changes before committing is pending.

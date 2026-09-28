@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Audit Log Service: local secrets and credentials (never commit)
+# Real API-key configuration, generated demo credentials, and signing-key material.
+/secrets/
+/local/
+api-keys*.toml
+!*.example.toml
+demo-credentials*
+*.key
+*.pem
