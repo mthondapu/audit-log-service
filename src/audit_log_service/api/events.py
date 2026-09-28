@@ -43,11 +43,11 @@ from audit_log_service.security.capabilities import Capability
 
 router = APIRouter()
 
-_PROBLEM: dict[str, Any] = {"model": ProblemDetails}
-_AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
-    401: {**_PROBLEM, "description": "Missing, malformed, or unknown credentials"},
-    403: {**_PROBLEM, "description": "The principal lacks the required capability"},
-    503: {**_PROBLEM, "description": "The database is unavailable"},
+PROBLEM: dict[str, Any] = {"model": ProblemDetails}
+AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {**PROBLEM, "description": "Missing, malformed, or unknown credentials"},
+    403: {**PROBLEM, "description": "The principal lacks the required capability"},
+    503: {**PROBLEM, "description": "The database is unavailable"},
 }
 _REQUEST_BODY_SCHEMA = {
     "requestBody": {
@@ -75,16 +75,16 @@ _REQUEST_BODY_SCHEMA = {
                 }
             },
         },
-        400: {**_PROBLEM, "description": "The body is not valid JSON"},
-        413: {**_PROBLEM, "description": "The body exceeds 64 KiB"},
-        415: {**_PROBLEM, "description": "The body is not application/json"},
-        422: {**_PROBLEM, "description": "The event failed validation"},
-        **_AUTH_RESPONSES,
+        400: {**PROBLEM, "description": "The body is not valid JSON"},
+        413: {**PROBLEM, "description": "The body exceeds 64 KiB"},
+        415: {**PROBLEM, "description": "The body is not application/json"},
+        422: {**PROBLEM, "description": "The event failed validation"},
+        **AUTH_RESPONSES,
     },
 )
 async def append_audit_event(request: Request) -> JSONResponse:
-    settings = _settings(request)
-    principal = _authorize(request, settings, Capability.EVENTS_WRITE)
+    settings = app_settings(request)
+    principal = authorize_request(request, settings, Capability.EVENTS_WRITE)
     try:
         document = await read_json_body(request)
         event = prepare_event(parse_submission(document), principal.id, settings.vocabulary)
@@ -150,13 +150,13 @@ _QUERY_PARAMETERS = {
     summary="Query audit events",
     openapi_extra=_QUERY_PARAMETERS,
     responses={
-        422: {**_PROBLEM, "description": "A query parameter or the cursor is invalid"},
-        **_AUTH_RESPONSES,
+        422: {**PROBLEM, "description": "A query parameter or the cursor is invalid"},
+        **AUTH_RESPONSES,
     },
 )
 async def query_audit_events(request: Request) -> JSONResponse:
-    settings = _settings(request)
-    _authorize(request, settings, Capability.EVENTS_READ)
+    settings = app_settings(request)
+    authorize_request(request, settings, Capability.EVENTS_READ)
     try:
         query = parse_query(request.query_params.multi_items())
     except QueryError as error:
@@ -177,11 +177,11 @@ async def query_audit_events(request: Request) -> JSONResponse:
     "/audit/events/{id}",
     response_model=AuditEvent,
     summary="Retrieve one audit event",
-    responses={404: {**_PROBLEM, "description": "No event has this identifier"}, **_AUTH_RESPONSES},
+    responses={404: {**PROBLEM, "description": "No event has this identifier"}, **AUTH_RESPONSES},
 )
 async def get_audit_event(request: Request, id: str) -> JSONResponse:
-    settings = _settings(request)
-    _authorize(request, settings, Capability.EVENTS_READ)
+    settings = app_settings(request)
+    authorize_request(request, settings, Capability.EVENTS_READ)
 
     def load() -> dict[str, Any] | None:
         with request.app.state.engine.connect() as connection:
@@ -196,12 +196,12 @@ async def get_audit_event(request: Request, id: str) -> JSONResponse:
     return JSONResponse(body)
 
 
-def _settings(request: Request) -> Settings:
+def app_settings(request: Request) -> Settings:
     settings: Settings = request.app.state.settings
     return settings
 
 
-def _authorize(
+def authorize_request(
     request: Request, settings: Settings, capability: Capability
 ) -> AuthenticatedPrincipal:
     # Every Authorization value is passed on, so multiple headers are rejected (Phase 1 note).

@@ -28,7 +28,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from audit_log_service.api.errors import ApiProblem, problem_json, request_id_of
-from audit_log_service.api.events import router
+from audit_log_service.api.events import router as events_router
+from audit_log_service.api.verification import router as verification_router
 from audit_log_service.application.events import EventSubmission
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import DATABASE_URL_VARIABLE, Settings, load_settings
@@ -67,7 +68,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     )
     app.state.settings = settings
     app.state.engine = engine
-    app.include_router(router)
+    app.include_router(events_router)
+    app.include_router(verification_router)
     _install_error_handling(app)
     app.openapi = lambda: _openapi(app)  # type: ignore[method-assign]
     return app

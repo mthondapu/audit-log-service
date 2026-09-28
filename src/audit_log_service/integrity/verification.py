@@ -141,7 +141,9 @@ def _content_hash_matches(record: AuditRecord) -> bool:
         return False
     try:
         return compute_content_hash(record.content) == record.content_hash
-    except IntegrityInputError:
+    except (IntegrityInputError, RecursionError):
+        # A structure nested too deeply to walk can only come from tampering: it is this record's
+        # content mismatch, and verification continues with the next record.
         return False
 
 

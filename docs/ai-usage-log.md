@@ -1606,3 +1606,132 @@ note in FR-2.
 
 **Sign-off:** I gave the Q1–Q3 decisions recorded above. My review and sign-off of the Phase 6 implementation are
 pending.
+
+### 2026-09-28 — Phase 7: chain verification API
+
+**Date/Time:** 2026-09-28, from 19:40 UTC (from session timestamps: Phase 7 planning requested at 19:40; my
+decisions D1–D6 given at 19:42; implementation approved at 19:44).
+
+**Activity:** Developer-led, AI-assisted planning and implementation of `GET /audit/verify` on the Phase 3 verifier
+and Phase 4 persistence.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude first produced a read-only Phase 7 plan. It identified FR-3 as the next area,
+because its dependencies were built and later phases depend on it, and it listed the remaining requirements and
+open questions.
+
+**Previously approved requirements and decisions:** FR-3 (the endpoint, `chain:verify`, `200` in both outcomes, the
+eight response fields, fixed messages, and the protected fields), the Phase 3 decisions B1–B6 (precedence, gap and
+genesis rules, the strict-earlier regression rule, and the pure result), and the deferrals of `PAYLOAD_VALUE_MISSING`
+(B3) and of `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` (B4).
+
+**My decisions:**
+
+- **D1:** `verifiedAt` is the database clock, `clock_timestamp()`, in the canonical form.
+- **D2:** before checkpoints exist, `anchor` is `{"status": "NONE", "sequence": null}`.
+- **D3:** I approved the eight fixed messages exactly as Claude proposed them.
+- **D4:** unknown or repeated query parameters are rejected with `422`.
+- **D5:** health endpoints are not part of Phase 7.
+- **D6:** no tamper tooling; tampering happens only inside integration tests, as the owner.
+
+**Correction I made:** `clock_timestamp()` returns the actual current time, so it is not stable within a
+`REPEATABLE READ` snapshot. `verifiedAt` is therefore described as the database clock read once at the start of
+verification; only the verified data is the single `REPEATABLE READ, READ ONLY` snapshot.
+
+**What the AI implemented:**
+
+- `application/verification.py`:
+  - the approved message table, keyed by violation type;
+  - `verify_audit_chain`, which opens one `REPEATABLE READ, READ ONLY` transaction, reads `clock_timestamp()` first,
+    loads the chain with the existing `load_chain_entries`, and runs the unchanged `verify_chain`.
+- `api/verification.py`: `GET /audit/verify`. It authenticates, authorizes `chain:verify`, rejects any query
+  parameter with `422`, and returns `200` with the result.
+- `api/schemas.py`: the `ChainVerification`, `ChainHead`, `Anchor`, and `Violation` response models, and the mapping
+  that exposes only sequences, record identifiers, hashes, types, and fixed messages.
+- `api/events.py`: the authentication helper, the settings helper, and the response constants became public (renames
+  only) so the new route reuses them.
+- `api/app.py`: registers the new router.
+
+The integrity package, persistence, migrations, dependencies, and configuration are unchanged.
+
+**Tests (45 new, 781 in total):**
+
+- **Unit (13):**
+  - the message table covers exactly the eight approved types, with the approved wording and no placeholders;
+  - the response mapping for empty, intact, and broken chains, including each violation type;
+  - OpenAPI.
+- **API integration against real PostgreSQL (32):**
+  - access: authentication before validation; the writer and administrator (no `chain:verify`) are `403`; the
+    auditor and regulator are `200`;
+  - query parameters rejected;
+  - empty and intact chains, with `head`;
+  - `verifiedAt` bracketed by the database clock;
+  - the snapshot confirmed as `repeatable read` and read-only;
+  - verification leaves the chain unchanged;
+  - owner-role tampering, each detected with the expected type and sequence:
+    - `CONTENT_HASH_MISMATCH` (an actor edit and a committed-payload edit) and `PAYLOAD_VALUE_MISMATCH`;
+    - `RECORD_HASH_MISMATCH` (two violations), `PREVIOUS_HASH_MISMATCH`, and `GENESIS_MISMATCH`;
+    - `SEQUENCE_GAP` (a deleted middle record), a forged insertion, and a reordering;
+    - `RECORDED_AT_REGRESSION`;
+    - `SEQUENCE_DUPLICATE`, in a throwaway database after dropping `UNIQUE(sequence)`;
+  - continuation past the first violation;
+  - the documented limitations: truncation, a deleted payload value, and a consistent full rewrite still report
+    intact;
+  - no protected fields disclosed;
+  - `503` when the database is unreachable.
+
+**Documentation updates:**
+
+- `requirements.md`: an FR-3 API-definition note with D1–D4, the message table, and the limitations.
+- `architecture.md` §5 and `README.md`: the implemented endpoints.
+
+No ADR changes.
+
+**Limitations:** until later phases, verification does not detect a deleted payload value, truncation of the newest
+records, or a consistent full rewrite. The verifier loads the whole chain into memory, and its performance is to be
+measured under NFR-3. The `httpx2` warning noted in Phase 5 remains.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 781 passed (553 unit, 227 integration, and 1 package test), with 100% statement and branch
+  coverage and no coverage exclusions.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Review finding and follow-up fix (requested 2026-09-28 at 20:04 UTC, from session timestamps).**
+
+- **The finding.** Claude's read-only Phase 7 review found a defect that predates Phase 7 and that the new endpoint
+  exposed. PostgreSQL accepts a tampered `committed_payload` nested about 5000 levels deep (it rejects around
+  50,000). psycopg then raised `RecursionError` while `load_chain_entries` read it, so `GET /audit/verify` returned
+  `500` instead of a verification result. At slightly lower depths the payload decodes, but the Phase 3 content
+  check raised the same error.
+- **My decision.** I approved handling it at the affected record: report that record as `CONTENT_HASH_MISMATCH` and
+  continue. I ruled out wrapping the endpoint or the whole of `verify_chain`.
+- **What the AI changed:**
+  - `persistence/audit_log.py`: `load_chain_entries` (the verification loader only) now reads `committed_payload` as
+    text and decodes it per record. A payload too deep to decode is kept as its undecoded text, which can never be a
+    committed structure. `load_entry` and `query_entries` are unchanged.
+  - `integrity/verification.py`: the per-record content check treats `RecursionError` like the input errors it
+    already caught, reporting `CONTENT_HASH_MISMATCH` for that record. That is a one-line change; hashing,
+    canonicalization, commitments, violation types, and precedence are unchanged.
+- **Tests (7 new, 788 in total):**
+  - unit: a payload too deep to walk is reported for its record and verification continues; undecoded payload text
+    is a content mismatch; a depth-31 payload still verifies;
+  - API integration at depths 900 and 5000: `200`, `CONTENT_HASH_MISMATCH` with the right sequence and record ID,
+    continuation to a later violation, and no protected fields;
+  - loader: the text-based chain loader matches single-record loading for ordinary payloads, and keeps an
+    undecodable payload as text.
+- **Validation (performed by Claude, results as observed):** 788 passed, with 100% statement and branch coverage and
+  no exclusions. Ruff, strict Pyright, Bandit, `pip-audit`, `uv lock --check`, `uv sync --locked`, and
+  `git diff --check` were all clean.
+
+**Sign-off:** I gave the D1–D6 decisions, the correction, and the follow-up fix decision recorded above. My review
+and sign-off of the Phase 7 implementation are pending.

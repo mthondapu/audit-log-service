@@ -87,7 +87,7 @@ Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, N
 
 Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 
-**Implemented so far (Phases 5–6):** `POST /audit/events`, `GET /audit/events`, and `GET /audit/events/{id}`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
+**Implemented so far (Phases 5–7):** `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, and `GET /audit/verify`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
 
 ## 6. Authentication and authorization
 

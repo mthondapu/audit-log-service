@@ -38,7 +38,7 @@ The service reads its configuration from the environment once, at startup, and r
 uv run uvicorn audit_log_service.api.app:create_app --factory
 ```
 
-Implemented endpoints: `POST /audit/events`, `GET /audit/events`, and `GET /audit/events/{id}`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, and `GET /audit/verify`. The OpenAPI document is served at `/openapi.json` and `/docs`.
 
 ## Tests
 

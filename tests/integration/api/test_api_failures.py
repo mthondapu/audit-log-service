@@ -163,3 +163,15 @@ def test_query_with_unreachable_database_is_503(
 
     body = _assert_problem(response, 503)
     assert body["detail"] == "The service is temporarily unavailable."
+
+
+def test_verification_with_unreachable_database_is_503(
+    settings: Settings, make_client: MakeClient, auditor: Headers
+) -> None:
+    unreachable = create_engine(
+        "postgresql+psycopg://nobody@127.0.0.1:1/nothing", connect_args={"connect_timeout": 1}
+    )
+    response = make_client(create_app(settings, unreachable)).get("/audit/verify", headers=auditor)
+
+    body = _assert_problem(response, 503)
+    assert body["detail"] == "The service is temporarily unavailable."

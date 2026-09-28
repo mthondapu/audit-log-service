@@ -1,6 +1,7 @@
 """Integration tests for the serialized append path against PostgreSQL."""
 
 import dataclasses
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -30,6 +31,7 @@ from audit_log_service.persistence.audit_log import (
     PersistenceUsageError,
     append_event,
     load_chain_entries,
+    load_entry,
 )
 
 Append = Callable[..., AuditRecord]
@@ -322,3 +324,49 @@ def _leaves(node: Any, pointer: str = "") -> list[tuple[str, Any]]:
             for leaf in _leaves(item, f"{pointer}/{index}")
         ]
     return [(pointer, node)]
+
+
+def test_chain_loading_decodes_payloads_exactly_like_single_record_loading(
+    append: Append, app_engine: Engine
+) -> None:
+    # The verification loader reads committed payloads as text; the result must be identical.
+    backslash = chr(0x5C)
+    payloads: list[dict[str, Any]] = [
+        {},
+        {"amount": 12.5, "n": -9007199254740991, "flag": False, "none": None},
+        {
+            "text": f'caf{chr(0xE9)} {chr(0x1F600)} {backslash} " /',
+            "nested": {"a": [[], {}, [1, [2]]]},
+        },
+        {"k~/": ["x"]},
+    ]
+    for payload in payloads:
+        append(payload=payload)
+
+    with app_engine.begin() as connection:
+        chain = load_chain_entries(connection)
+        singles = [load_entry(connection, uuid.UUID(e.record.content.id)) for e in chain]
+
+    assert chain == singles
+    assert verify_chain(chain).intact
+
+
+def test_chain_loading_keeps_an_undecodable_payload_as_text(
+    append: Append, owner_engine: Engine, app_engine: Engine
+) -> None:
+    append()
+    append()
+    deep = '{"n":' * 5000 + "{}" + "}" * 5000
+    with owner_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE audit_records SET committed_payload = CAST(:d AS jsonb) WHERE sequence = 1"
+            ),
+            {"d": deep},
+        )
+
+    with app_engine.begin() as connection:
+        first, second = load_chain_entries(connection)
+
+    assert isinstance(first.record.content.payload, str)
+    assert isinstance(second.record.content.payload, dict)

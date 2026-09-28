@@ -18,14 +18,26 @@ The advisory lock is released when the transaction ends. PostgreSQL, not the app
 serializes writers. The integrity core computes every hash, commitment, and canonical form.
 """
 
+import json
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import ColumnElement, Connection, Select, and_, func, insert, select, text
+from sqlalchemy import (
+    ColumnElement,
+    Connection,
+    Select,
+    Text,
+    and_,
+    cast,
+    func,
+    insert,
+    select,
+    text,
+)
 
 from audit_log_service.integrity.canonical import JsonValue
 from audit_log_service.integrity.commitments import PayloadValue, commit_payload
@@ -132,8 +144,14 @@ def load_chain_entries(connection: Connection) -> list[ChainEntry]:
 
     A single statement reads records and values, so the result reflects one snapshot even at
     READ COMMITTED.
+
+    The committed payload is read as text and decoded record by record. A payload nested too
+    deeply to decode (possible only through direct tampering; appends allow depth 32) is kept as
+    its undecoded text, which can never be a committed structure. Verification then reports that
+    record as `CONTENT_HASH_MISMATCH` and continues, instead of the whole read failing.
     """
-    return _entries_from_rows(connection.execute(_records_with_values()).all())
+    rows = connection.execute(_records_with_values(payload_as_text=True)).all()
+    return _entries_from_rows(rows, _decode_committed_payload)
 
 
 def load_entry(connection: Connection, record_id: uuid.UUID) -> ChainEntry | None:
@@ -203,10 +221,15 @@ def query_entries(
     return _entries_from_rows(rows)
 
 
-def _records_with_values() -> Select[Any]:
+def _records_with_values(*, payload_as_text: bool = False) -> Select[Any]:
+    payload = audit_records.c.committed_payload
+    record_columns: list[ColumnElement[Any]] = [
+        column for column in audit_records.c if column is not payload
+    ]
+    record_columns.append(cast(payload, Text).label(payload.name) if payload_as_text else payload)
     return (
         select(
-            audit_records,
+            *record_columns,
             audit_payload_values.c.pointer,
             audit_payload_values.c.canonical_value,
             audit_payload_values.c.salt,
@@ -221,7 +244,20 @@ def _records_with_values() -> Select[Any]:
     )
 
 
-def _entries_from_rows(rows: Sequence[Any]) -> list[ChainEntry]:
+def _decode_committed_payload(encoded: str) -> Any:
+    try:
+        return json.loads(encoded)
+    except RecursionError:
+        return encoded
+
+
+def _as_stored(value: Any) -> Any:
+    return value
+
+
+def _entries_from_rows(
+    rows: Sequence[Any], decode_payload: Callable[[Any], Any] = _as_stored
+) -> list[ChainEntry]:
     entries: list[ChainEntry] = []
     current: AuditRecord | None = None
     values: dict[str, PayloadValue] = {}
@@ -229,7 +265,7 @@ def _entries_from_rows(rows: Sequence[Any]) -> list[ChainEntry]:
         if current is None or current.content.id != str(row.id):
             if current is not None:
                 entries.append(ChainEntry(record=current, payload_values=MappingProxyType(values)))
-            current = _record_from_row(row)
+            current = _record_from_row(row, decode_payload)
             values = {}
         if row.pointer is not None:
             values[row.pointer] = PayloadValue(canonical_text=row.canonical_value, salt=row.salt)
@@ -238,7 +274,7 @@ def _entries_from_rows(rows: Sequence[Any]) -> list[ChainEntry]:
     return entries
 
 
-def _record_from_row(row: Any) -> AuditRecord:
+def _record_from_row(row: Any, decode_payload: Callable[[Any], Any]) -> AuditRecord:
     return AuditRecord(
         sequence=row.sequence,
         previous_hash=row.previous_hash,
@@ -253,7 +289,7 @@ def _record_from_row(row: Any) -> AuditRecord:
             timestamp=None if row.timestamp is None else format_timestamp(row.timestamp),
             recorded_at=format_timestamp(row.recorded_at),
             recorded_by=row.recorded_by,
-            payload=row.committed_payload,
+            payload=decode_payload(row.committed_payload),
         ),
     )
 

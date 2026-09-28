@@ -369,6 +369,40 @@ def test_resealed_earlier_record_breaks_the_next_link() -> None:
     assert result.violation_count == 1
 
 
+def _nested(depth: int, leaf: Any) -> dict[str, Any]:
+    node: dict[str, Any] = {"leaf": leaf}
+    for _ in range(depth - 1):
+        node = {"n": node}
+    return node
+
+
+def test_payload_too_deep_to_walk_is_a_content_hash_mismatch_and_verification_continues() -> None:
+    # Only tampering can store this: appends are limited to depth 32.
+    entries = build_chain([{}, {}, {}, {}])
+    entries = replace_content(entries, 1, payload=_nested(5000, OTHER_HASH))
+    entries = replace_content(entries, 3, actor_id="changed")
+
+    result = verify_chain(entries)
+
+    assert first(result) == (V.CONTENT_HASH_MISMATCH, 2)
+    assert result.violation_count == 2
+    assert result.records_checked == 4
+
+
+def test_undecoded_payload_text_is_a_content_hash_mismatch() -> None:
+    # The loader keeps a payload it cannot decode as its text, which is never a committed structure.
+    entries = replace_content(build_chain([{}, {}]), 0, payload='{"n": {"n": {}}}')
+
+    result = verify_chain(entries)
+
+    assert first(result) == (V.CONTENT_HASH_MISMATCH, 1)
+    assert result.violation_count == 1
+
+
+def test_deepest_payload_an_append_allows_still_verifies() -> None:
+    assert verify_chain(build_chain([_nested(31, "value"), {}])).intact
+
+
 def test_tail_truncation_is_not_detectable_without_a_checkpoint() -> None:
     # Documents a known limitation: CHAIN_TRUNCATED needs the deferred checkpoint anchor (FR-4).
     entries = build_chain([{}, {}, {}])[:2]

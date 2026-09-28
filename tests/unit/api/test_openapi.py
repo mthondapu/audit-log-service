@@ -72,6 +72,7 @@ def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any])
         ("/audit/events", "post"),
         ("/audit/events", "get"),
         ("/audit/events/{id}", "get"),
+        ("/audit/verify", "get"),
     }
 
 
@@ -116,6 +117,30 @@ def test_query_documents_its_parameters_statuses_and_page(openapi: dict[str, Any
     page = openapi["components"]["schemas"]["AuditEventPage"]
     assert set(page["properties"]) == {"items", "nextCursor"}
     assert page["properties"]["items"]["items"] == {"$ref": "#/components/schemas/AuditEvent"}
+
+
+def test_verify_documents_its_statuses_and_result(openapi: dict[str, Any]) -> None:
+    verify = openapi["paths"]["/audit/verify"]["get"]
+
+    assert "parameters" not in verify
+    assert set(verify["responses"]) == {"200", "401", "403", "422", "503"}
+    assert _problem_codes(verify["responses"]) == {"401", "403", "422", "503"}
+    assert verify["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ChainVerification"
+    }
+    schemas = openapi["components"]["schemas"]
+    assert list(schemas["ChainVerification"]["properties"]) == [
+        "intact",
+        "scheme",
+        "verifiedAt",
+        "recordsChecked",
+        "head",
+        "anchor",
+        "violationCount",
+        "firstViolation",
+    ]
+    assert set(schemas["Violation"]["properties"]) == {"type", "sequence", "recordId", "message"}
+    assert set(schemas["Anchor"]["properties"]) == {"status", "sequence"}
 
 
 def test_get_documents_its_statuses(openapi: dict[str, Any]) -> None:

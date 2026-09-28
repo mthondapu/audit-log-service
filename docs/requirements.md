@@ -222,6 +222,27 @@ Verification shall detect, where applicable:
 
 Legitimate archived and redacted records shall not be reported as integrity violations solely because they have undergone an authorized retention or redaction operation.
 
+The API definition (Phase 7, developer decisions D1 to D4):
+
+- `verifiedAt` is the database clock (`clock_timestamp()`), read once at the start of verification, in the canonical `YYYY-MM-DDTHH:MM:SS.ffffffZ` form. The verified records and payload values come from one `REPEATABLE READ`, `READ ONLY` snapshot;
+- until checkpoints exist, `anchor` is `{"status": "NONE", "sequence": null}`; FR-4 will add lifecycle statuses to the same object;
+- each violation type has one fixed message:
+
+| Type | Message |
+|---|---|
+| `SEQUENCE_DUPLICATE` | The record's sequence number repeats that of an earlier record. |
+| `SEQUENCE_GAP` | The record's sequence number does not directly follow the preceding record, or the chain does not start at sequence 1. |
+| `GENESIS_MISMATCH` | The first record's previousHash is not the genesis value. |
+| `PREVIOUS_HASH_MISMATCH` | The record's previousHash does not match the preceding record's recordHash. |
+| `CONTENT_HASH_MISMATCH` | The record's content does not match its contentHash. |
+| `PAYLOAD_VALUE_MISMATCH` | A stored payload value does not match its commitment. |
+| `RECORD_HASH_MISMATCH` | The record's recordHash does not match its sequence, previousHash, and contentHash. |
+| `RECORDED_AT_REGRESSION` | The record's recordedAt is earlier than the preceding record's recordedAt. |
+
+- the endpoint takes no query parameters; any query parameter, unknown or repeated, is rejected with `422`.
+
+Until the later phases are implemented, verification does not detect a deleted payload value (`PAYLOAD_VALUE_MISSING`, with retention and redaction), truncation of the newest records, or a consistent full rewrite (`CHAIN_TRUNCATED` and `ANCHOR_MISMATCH`, with checkpoints). Modification, deletion, insertion, and reordering of records, and changed payload values, are detected.
+
 ### FR-4 — Integrity Anchoring / Checkpoints
 
 The solution shall provide a mechanism that addresses detection of unauthorized rewriting of the complete historical chain and of tail truncation.
