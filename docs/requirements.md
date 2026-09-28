@@ -24,7 +24,7 @@ The system shall provide sufficient evidence for auditors and regulators to dete
 | Regulator | Audit access to client account data |
 | Administrator | Perform authorized operational actions such as retention and redaction |
 
-The exact authorization boundaries for these actors will be finalized during security and Scenario C design.
+For the prototype, these actors are mapped to capability-based roles (NFR-2). That mapping is a prototype security boundary chosen by the developer. It is not an assignment requirement or a production role-based access-control design.
 
 ## 3. Initial Requirements Decisions
 
@@ -34,7 +34,7 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 |---|---|---|---|
 | 1 | The assignment's `timestamp` field shall be the optional, caller-supplied time at which the event occurred; if omitted, it is stored as null. The server always assigns the authoritative `recordedAt` recording time. | Assignment + Developer-derived | Keeps the assignment's field name while separating business occurrence time from authoritative recording time. |
 | 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. Both `recordedAt` and the caller-supplied `timestamp` shall be normalized to UTC and represented at fixed microsecond precision; the caller's original offset is not retained. Timestamps with more than six fractional-second digits shall be rejected. Timestamps shall be immutable once recorded. | Developer-derived + Design decision | Avoids ambiguous local times and gives a single representation for storage, hashing, and responses. |
-| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
+| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the configured non-secret principal ID of the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
 | 4 | `payload` shall be a JSON object conforming to the I-JSON profile (RFC 7493) used for canonical hashing; the resulting input restrictions are listed in FR-1. | Assignment + Developer-derived + Design decision | Supports structured querying, redaction, validation, and deterministic integrity processing. |
 | 5 | The audit history shall have a defined logical ordering, and concurrent appends shall preserve that ordering without conflicting chain histories. `sequence` starts at 1, is contiguous, is never renumbered, and defines chain order (NFR-1). | Assignment + Developer-derived + Design decision | Required for a reliable append-only integrity model. |
 | 6 | Each audit record shall contain `contentHash` (a hash of its own content), `previousHash` (a link to the preceding record), and `recordHash` (a hash binding the record to its chain position). The first record's `previousHash` is the genesis value: 64 lowercase hexadecimal zeros. Definitions are in NFR-1. | Assignment + Design decision | Establishes the hash-chain structure and its starting point, and keeps content integrity separate from chain-position integrity. |
@@ -57,7 +57,9 @@ The service shall provide an API to append a new audit event.
 
 A successful append shall return sufficient information for the caller to identify the recorded event and its integrity position. The response shall contain the full stored record, including `id` and `sequence`, and shall reference the record's location (`GET /audit/events/{id}`).
 
-The server shall assign `recordedBy` from the authenticated caller. `recordedBy` shall be a stable, non-secret identifier of the calling service and is covered by `contentHash` (NFR-1). The authentication mechanism and exact `recordedBy` format are deferred to the security design.
+The server shall assign `recordedBy` from the authenticated caller. `recordedBy` shall be a stable, non-secret identifier of the calling service and is covered by `contentHash` (NFR-1). It is the configured principal ID associated with the caller's credential, never the credential itself (NFR-2).
+
+Appending events requires the `events:write` capability (NFR-2).
 
 Append requests shall be validated and bounded:
 
@@ -69,8 +71,11 @@ Append requests shall be validated and bounded:
 - strings shall not contain unpaired Unicode surrogates;
 - numbers shall be finite, and integers shall be within ±(2^53−1); fractional and exponent notation are accepted and interpreted as IEEE-754 double values, as I-JSON specifies;
 - strings shall not contain U+0000;
-- timestamps shall not have more than six fractional-second digits; and
+- timestamps shall not have more than six fractional-second digits;
+- event types in the reserved system-event namespace shall be rejected with `422`; and
 - unknown fields, including attempts to supply server-assigned fields, shall be rejected with `422`.
+
+Events submitted with `resourceType` `CLIENT_ACCOUNT` are also subject to the configuration-driven Scenario C validation in FR-8.
 
 The surrogate, finite-number, and integer-range rules (with duplicate-key rejection) are required for deterministic canonical hashing. The U+0000 and microsecond-precision rules are required by PostgreSQL storage; rejecting rather than silently truncating timestamps is defensive validation. There are no numeric restrictions beyond the approved I-JSON/JCS profile and applicable storage constraints; fractional and exponent-form numbers are permitted.
 
@@ -82,15 +87,20 @@ The normal API shall not provide an operation for arbitrary modification or dele
 
 Authorized privacy or retention operations that change the representation of stored information shall follow explicitly defined integrity-preserving rules and shall not be treated as unauthorized tampering.
 
-System events (design principle, Focused Discussion #3):
+System events (principle from Focused Discussion #3; mechanism decided in Focused Discussion #4):
 
-- retention and redaction operations are recorded as system events in the same audit chain (FR-5, FR-6);
-- public callers of the append API shall not be able to impersonate system events that authorize retention or redaction; the enforcement mechanism (for example a reserved namespace or validation rule), the internal or system identity, and the endpoint boundary are deferred to the security design; and
-- `actorId` remains the business actor and `recordedBy` the server-assigned technical caller, and neither is reinterpreted as the identity of the operator performing retention or redaction. How system events populate `eventType`, `actorId`, `resourceType`, and `resourceId` is unresolved and depends on the security design.
+- **Recording.** Retention, redaction, and export operations are recorded as system events in the same audit chain (FR-5, FR-6, FR-7).
+- **Reserved namespace.** System events use a reserved event-type namespace, enforced by the service layer. A public caller that submits a reserved event type receives `422`, so it cannot impersonate a system event. A database constraint may be added as defense in depth. No new hashed field is introduced; hash coverage is unchanged (NFR-1). The exact namespace prefix is an implementation detail.
+- **Fixed schemas.** System-event payloads use fixed, server-defined schemas. In the prototype, system events cannot be redacted (FR-6).
+- **Identity fields.** `actorId` remains the business actor and `recordedBy` the authenticated technical caller. Neither is reinterpreted as a separate operator field.
+  - Redaction events inherit `actorId`, `resourceType`, and `resourceId` from the target record, and the operator is recorded in `recordedBy`.
+  - Export audit events inherit their identifying fields from the export scope (FR-7).
+  - How retention events identify their resource is an implementation and design detail.
+- **Internal identity.** Whether a separate internal identity is needed, for example when retention runs without an authenticated caller, is deferred together with the retention trigger (FR-5).
 
 ### FR-2 — Query Audit Events
 
-The service shall provide an API for authorized users to query audit events.
+The service shall provide an API for authorized users to query audit events. Querying and retrieving audit records require the `events:read` capability (NFR-2).
 
 Queries shall support filtering by:
 
@@ -138,7 +148,7 @@ The service shall provide:
 
 `GET /audit/verify`
 
-The verification endpoint shall require authentication and authorization.
+The verification endpoint shall require authentication and authorization (the `chain:verify` capability, NFR-2).
 
 A verification request that executes successfully shall return `200`, with the verification result in the response body whether the chain is intact or broken. A detected integrity violation is a verification result, not an HTTP error.
 
@@ -168,7 +178,16 @@ The v1 verification response shall contain:
 
 Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`.
 
-`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. **Unresolved:** the rule for when a missing value is authorized by a retention or redaction event depends on the protection of system events and the internal identity (security design). Until it is resolved, verification cannot distinguish purged or redacted values from unauthorized removals. Violation types for retention boundaries are future work, tied to physical deletion.
+`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value.
+
+Missing-value authorization rule (approved in principle, Focused Discussion #4). A missing payload value is authorized when:
+
+1. the record is covered by a valid retention event (FR-5); or
+2. a later valid redaction event in the reserved system-event namespace identifies the target record and covers the missing pointer (FR-6).
+
+The authorizing event must itself pass its integrity checks. No other authorization semantics apply. Within the documented threat model, an authorizing event forged after the latest checkpoint is subject to the same limitation as any other record (FR-4).
+
+Violation types for retention boundaries are future work, tied to physical deletion.
 
 Violation messages shall be fixed per violation type and shall not be derived from record data. The response may expose sequence numbers, record identifiers, violation types, head information, and anchor information. It shall not expose payload values, payload keys, `actorId`, `resourceId`, or `recordedBy`.
 
@@ -196,7 +215,7 @@ Limitation: records appended after the latest checkpoint can be rewritten, fabri
 
 Per-record signatures are not used.
 
-Checkpoint lifecycle and timing, checkpoint format, storage mechanics, and key-management details remain deferred.
+Creating checkpoints requires the `checkpoint:create` capability (NFR-2). Checkpoint lifecycle and timing, checkpoint format, storage mechanics, and key-management details remain deferred.
 
 ### FR-5 — Retention
 
@@ -222,9 +241,9 @@ Retention model (design decision, Focused Discussion #3):
 
 - **Payload purge.** Retention purges the recoverable payload values of archived records together with their salts. Immutable audit records remain, including metadata such as `actorId`, `resourceId`, `eventType`, and timestamps. Physical deletion of audit records is future work and is not part of the current implementation.
 - **Retention events.** Retention does not update individual audit records. Each retention run appends a system event that records the retention cutoff and `upToSequence`. Records covered by the highest applicable retention event are archived. Eligibility is based on `recordedAt` from the database clock, so archived records always form the oldest contiguous block of the chain. `sequence` is never renumbered.
-- **Verification.** Verification continues from genesis under this model. Authorization of purged values depends on the unresolved `PAYLOAD_VALUE_MISSING` rule (FR-3).
+- **Verification.** Verification continues from genesis under this model. Purged values are authorized by retention events under the missing-value authorization rule (FR-3).
 - **Processing and recovery.** Under the append lock, the eligible boundary is determined and the retention event appended. Recoverable values are then purged in resumable batches; an interrupted purge can be safely resumed. If nothing is eligible, no retention event is appended.
-- **Configuration.** The retention window and the purge batch size are configurable; their values are implementation details. The prototype uses a simple trigger, whose exact mechanism is deferred to implementation planning. Scheduling is future work. Who may perform retention is deferred to the security design.
+- **Configuration.** The retention window and the purge batch size are configurable; their values are implementation details. The prototype uses a simple trigger, whose exact mechanism is deferred to implementation planning. Scheduling is future work. Retention requires the `retention:run` capability (NFR-2). Whether a separate internal identity is needed depends on the retention trigger, and is deferred with it.
 
 Archived-record visibility and representation are defined in FR-2.
 
@@ -259,7 +278,7 @@ Redaction design (design decision, Focused Discussion #3):
 - **Storage.** The immutable record holds the committed payload representation. Recoverable values and their salts are stored separately, per value; deleting a value deletes its salt. Table and schema names are implementation details.
 - **Commitments.** Per-value salted SHA-256 commitments use the approved RFC 8785, SHA-256, and `audit-log/v1` domain-label design (NFR-1). No additional canonicalization rule is introduced. The exact commitment encoding is fixed at implementation and documented for independent verifiers (FR-7).
 - **Addressing.** Values are addressed with RFC 6901 JSON Pointers. A request may contain multiple pointers, and a pointer to an object or array covers every value beneath it. An invalid or nonexistent pointer rejects the whole request.
-- **Redaction event.** Each redaction appends a separate event that identifies the target record, the redacted paths, and the reason, and never contains the redacted values. How this event populates its fields is unresolved (FR-1, System events).
+- **Redaction event.** Each redaction appends a separate system event that identifies the target record, the redacted paths, and the reason, and never contains the redacted values. It inherits `actorId`, `resourceType`, and `resourceId` from the target record, and the requesting operator is recorded in `recordedBy` (FR-1, System events).
 - **Atomicity.** Value deletion and the redaction event are committed atomically; a failed operation leaves no partial redaction. Concurrent redactions are serialized consistently with append concurrency (NFR-1).
 - **Repeated and partial redaction.** Only values not yet redacted are redacted, and the event records only those. If no new values would be affected, no event is created.
 - **Archived records.** Archived records cannot be redacted. A record is archived once its retention event has been committed, even while the purge is still in progress.
@@ -269,17 +288,17 @@ Redaction design (design decision, Focused Discussion #3):
   - `404` when the target record does not exist;
   - `422` for unknown fields, invalid or nonexistent pointers, or an invalid reason; pointer errors identify the pointer by its position in the request, without echoing it;
   - `409` when no new values would be redacted or the target is archived; and
-  - `401` / `403` by convention, with the role mapping deferred.
+  - `401` / `403` by convention.
 
   The operation's endpoint path is not finalized.
 
-Response representation of redacted values is defined in FR-2. Verification of missing values is addressed in FR-3.
+Response representation of redacted values is defined in FR-2. Authorization of missing values is defined in FR-3.
 
-Deferred to the security design and Scenario C:
+Redaction security (design decision, Focused Discussion #4):
 
-- authorization roles, separation of duties, and any second-approver requirement;
-- whether retention and redaction system events can themselves be redacted; and
-- the authorization rule for missing payload values.
+- only principals with the `events:redact` capability may redact (NFR-2); writers, auditors, regulators, and any internal or system identity cannot;
+- separation of duties and second-approver workflows are production requirements outside the prototype; and
+- system-generated retention and redaction events cannot themselves be redacted in the prototype, and their payloads use fixed, server-defined schemas.
 
 ### FR-7 — Export
 
@@ -310,12 +329,18 @@ Export design (design decision, Focused Discussion #3):
   - Records carry the `archived` and `redactedPaths` fields (FR-2). These are excluded when recomputing hashes.
 - **Pre-signing verification.** Before signing, the service verifies the complete chain within the same snapshot up to `asOfSequence`, including a check against any existing checkpoint. An export is never signed if verification fails. Consequently, while the chain is broken, every export is refused.
 - **Checkpoints.** In v1, an export only reads checkpoint state during pre-signing verification. It never creates or updates a checkpoint. Export manifests and chain checkpoints are separate concepts.
-- **Verifier.** A standalone verifier and a documented verification algorithm shall be provided. The recipient shall not need the live service. The verifier validates the manifest signature, recomputes value commitments, `contentHash`, and `recordHash`, and checks the records against the manifest list and count.
+- **Verifier.** A standalone verifier and a documented verification algorithm shall be provided. The recipient shall not need the live service. The verifier:
+  - validates the manifest signature;
+  - recomputes value commitments, `contentHash`, and `recordHash`;
+  - checks the records against the manifest list and count; and
+  - validates the authorization of missing values (FR-3) when the authorizing events are present in the export (approved in principle, Focused Discussion #4).
+
+  Verification output never exposes sensitive payload values.
 - **Status behavior.** Errors use RFC 9457 Problem Details:
   - `422` for invalid selectors or parameters, and for an export exceeding the configured size limit;
   - `409` when pre-signing verification fails;
-  - `503` when the signing key or the database is unavailable;
-  - `400` for a malformed request body, if the chosen method takes one; and
+  - `503` when the signing key or the database is unavailable, or when the export audit event cannot be appended;
+  - `400` for a malformed request body; and
   - `401` / `403` by convention.
 
   An empty result returns `200` with a signed manifest whose record count is 0. `413` is not used, because it describes an oversized request, not an oversized response.
@@ -325,23 +350,60 @@ Signed manifest (approved in principle, Focused Discussion #3):
 - Export manifests are signed, because independent verification requires trusted authenticity.
 - The manifest binds: `format`, `scheme`, `scope`, `asOfSequence`, `asOfRecordHash`, `generatedAt`, a completeness statement (all matching records, including archived records, as of `asOfSequence`), `recordCount`, and a `records` list of `sequence`, `id`, and `recordHash`.
 - It is signed over its RFC 8785 canonical form under a domain label, with the signature outside the signed content.
+- The manifest also includes `requestedBy`, the principal that requested the export. This was added in Focused Discussion #4 (approved in principle) and modifies the Focused Discussion #3 manifest direction; it was not part of that original direction.
 - The exact manifest schema is not final.
 - Including the intervening chain entries is documented as an alternative and future extension.
 
-Deferred:
+Export security (Focused Discussion #4):
 
-- **Security design and Scenario C:** who may export; whether export operations are themselves audited; `GET` versus `POST` for export; and client-data access rules.
-- **Checkpoint and key design:** the export signature algorithm, `keyId` semantics, whether exports use the checkpoint key, and key lifecycle, storage, and distribution. The relationship to the approved Ed25519 checkpoint direction (FR-4) is explicitly unresolved.
+- **Capability.** Creating an export requires the `export:create` capability, separate from `events:read` (NFR-2). *(Design decision)*
+- **Export audit event.** Creating an export is treated as an auditable, security-sensitive operation. After the bundle is built and signed, an export audit event in the reserved system-event namespace is appended before the bundle is returned. If the event cannot be appended, no bundle is returned and the response is `503`. The event's payload uses a fixed, server-defined schema. *(Approved in principle; a developer security decision, not an assignment requirement)*
+- **Identifying fields.** The export audit event inherits its identifying fields from the export scope. An `{actorId}` export sets `actorId` to the exported actor; a `{resourceId, resourceType}` export sets `resourceType` and `resourceId` to the exported resource. Fields not supplied by the scope use fixed, server-defined values. The event does not change the export snapshot: it is appended after `asOfSequence`. *(Design decision)*
+- **Method.** Export uses `POST`, because creating an export has this audit side effect. *(Design decision)*
+- **Signing.** Export manifests are signed with Ed25519. The required `cryptography` dependency shall be validated and explicitly approved during implementation planning. *(Approved in principle)*
+- **Key identifier.** `keyId` is the SHA-256 fingerprint of the raw public key. The design supports key rotation, verification of historical signatures, and a trust anchor obtained out of band rather than from the live service. *(Approved in principle)*
+
+Deferred: whether exports and checkpoints use separate signing keys, and the production key lifecycle, storage, and distribution.
 
 ### FR-8 — Regulatory Access Audit / Scenario C
 
-The system shall support regulatory auditing of access to client account data.
+**Confirmed requirement (Assignment).** The system shall support regulatory auditing of access to client account data. The assignment deliberately leaves this under-specified. It expects the submission to show the clarified requirement statement, the design decisions it produced, and an implementation or a documented scope boundary.
 
-The provided requirement is intentionally under-specified and shall be clarified before finalizing the Scenario C implementation scope.
+**Prototype clarification (developer interpretation, not stated by the assignment).** For this prototype, "access" to client account data includes views, creates, updates, deletes, exports, and denied-access events. These are assumed to be reported by participating business systems as audit events.
 
-The developer's initial clarification questions are listed in Section 8. These questions are intended for requirements brainstorming and Claude-assisted challenge; they are not treated as answered stakeholder requirements.
+Clarified prototype statement: the audit service records access to client account data as tamper-evident audit events. An authorized regulator or auditor can retrieve the access events for a given client account or actor, verify the chain's integrity, and obtain a signed export that can be verified independently. The service also records exports of audit data about client accounts.
 
-No specific interpretation of "access" shall be treated as finalized until the Scenario C clarification process is completed.
+This interpretation remains subject to stakeholder confirmation. The developer's clarification questions (Section 8) are not treated as answered.
+
+**Prototype assumptions (developer assumptions, not stakeholder-confirmed):**
+
+| # | Assumption |
+|---|---|
+| SC-A1 | A client account is identified by `resourceType` `CLIENT_ACCOUNT` (a configured value) and `resourceId` set to the account identifier. |
+| SC-A2 | Access covers views, creates, updates, deletes, exports, and denied-access events, reported by participating business systems through the normal append API. |
+| SC-A3 | Access events use a configured vocabulary of distinct event types, so they can be filtered by `eventType`. Recommended payload fields record context such as purpose, channel, and the *names* of fields accessed, never their values. Exact names are configuration and implementation details. |
+| SC-A4 | `actorId` is whoever accessed the account (a person or a system), and `recordedBy` is the system that reported it. |
+| SC-A5 | Prototype regulator and auditor roles can read, verify, and export across all client accounts. This is a prototype authorization assumption, not an assignment requirement. |
+| SC-A6 | Within this service, exports are recorded as audit events (FR-7). Individual queries are logged operationally and are not appended to the chain. |
+| SC-A7 | Denied attempts against this audit service are logged operationally and are not appended to the chain (NFR-2). |
+| SC-A8 | Regulators see redacted values as `null`; redaction is final (FR-2, FR-6). |
+
+**Prototype implementation scope (design decision, Focused Discussion #4):**
+
+- documentation of the clarification, assumptions, and scope boundary;
+- demonstration or seed data and tests;
+- configuration-driven validation of events submitted through the public API with `resourceType` `CLIENT_ACCOUNT`: the `eventType` must belong to the configured access-event vocabulary, and the configured required payload keys must be present. Reserved system events are exempt, because their schemas are server-defined. The validation is configuration, not a hard-coded business rule; and
+- regulator and auditor use of the existing query (FR-2), verification (FR-3), and export (FR-7) capabilities.
+
+**Production considerations outside the prototype:**
+
+- limiting regulator access to specific accounts or periods;
+- individual regulator identity through an identity provider;
+- legally required retention periods;
+- the applicable regulation;
+- recording every audit-log read, or denied attempts, in the chain;
+- external witnesses or write-once storage; and
+- reporting formats and turnaround times.
 
 ## 5. Non-Functional Requirements
 
@@ -351,7 +413,7 @@ Append-only and tamper-evident behavior shall not depend solely on application-l
 
 The final implementation shall include appropriate datastore-level protections against unauthorized modification or deletion.
 
-This is a developer-derived engineering control supporting the assignment's integrity objective. Database roles, privileges, and the privileged path for tampering demonstrations are deferred to the security design.
+This is a developer-derived engineering control supporting the assignment's integrity objective. Database roles, privileges, and the privileged path for tampering demonstrations remain open (§13).
 
 #### Integrity design
 
@@ -404,7 +466,30 @@ At minimum:
 
 Authorization controls are developer-derived engineering requirements supporting the assignment's security and Scenario C objectives.
 
-The exact authentication and authorization mechanism shall be finalized during security design.
+**Authentication (design decision, Focused Discussion #4):**
+
+- the prototype uses static API keys presented as Bearer credentials;
+- only SHA-256 hashes of keys are stored, and credentials are compared in constant time;
+- raw API keys shall never be committed;
+- each key maps to a configured, non-secret principal ID, which becomes `recordedBy` (FR-1); and
+- production identity-provider integration remains out of scope (§7).
+
+**Endpoints without authentication (prototype):** `/health/live` and `/health/ready` require no authentication. `/docs` and `/openapi.json` may be public in the prototype. That is not a production security requirement.
+
+**Authorization (design decision, Focused Discussion #4):** authorization is capability-based and enforced at the API/service boundary. Authorization checks occur before resource lookup, so an unauthorized caller cannot infer whether a resource exists.
+
+Prototype capability model (a prototype security boundary, not an assignment requirement or a production role-based access-control design):
+
+| Prototype role | Capabilities |
+|---|---|
+| writer | `events:write` |
+| auditor | `events:read`, `chain:verify`, `export:create` |
+| regulator | `events:read`, `chain:verify`, `export:create` |
+| administrator | `events:read`, `events:redact`, `retention:run`, `checkpoint:create` |
+
+**Denied attempts:** failed authentication and authorization attempts against the audit service are logged operationally and are not appended to the audit chain.
+
+**Signing keys:** the export signing algorithm and `keyId` direction are recorded in FR-7. Whether checkpoint and export keys are separate, and the production key lifecycle, storage, and distribution, remain deferred.
 
 ### NFR-3 — Performance
 
@@ -482,6 +567,7 @@ The API shall follow established HTTP/REST conventions. These are engineering co
 7. The final implementation will document prototype limitations where behavior is intentionally narrower than a production deployment.
 8. Authenticated writing services are trusted to assert the business `actorId`; the server-assigned `recordedBy` records which technical caller submitted each event.
 9. For integrity anchoring, an attacker may have write access to the audit database but not to the checkpoint signing key or the checkpoint store. In the prototype, the checkpoint store stands in for an external witness.
+10. The Scenario C prototype assumptions (SC-A1 to SC-A8) are listed in FR-8.
 
 ## 7. Out of Scope
 
@@ -503,7 +589,10 @@ The following are outside the initial implementation scope:
 - streaming or asynchronous exports;
 - including the intervening chain entries in exports (documented as an alternative and future extension);
 - exports scoped by `actorId` together with `resourceType`;
-- structured redaction reason codes; and
+- structured redaction reason codes;
+- production role-based access control, and separation-of-duties or second-approver workflows for redaction;
+- limiting regulator access to specific accounts or periods;
+- appending every audit-log read, or denied attempts against the audit service, to the audit chain; and
 - production-specific regulatory retention rules until the applicable regulation is identified.
 
 Design considerations for these areas may be documented where they materially affect the prototype architecture.
@@ -548,6 +637,10 @@ The following are the developer's initial questions for brainstorming and requir
 12. Does redaction require a second approver or separation of duties?
 
 13. What production throughput and historical data volume must the system support?
+
+14. Which identifier identifies a client account (for example an account number or a customer identifier)?
+
+15. May a regulator access all client accounts, or only specified accounts or periods?
 
 Because stakeholder answers are not expected to be available during the assessment, the final Scenario C requirement will be resolved through:
 
@@ -601,10 +694,13 @@ The implementation shall demonstrate the clarified interpretation of regulatory 
 | Canonicalization differs between the service and an independent verifier | False tamper reports, or exports that cannot be verified | RFC 8785 over I-JSON input, FR-1 input restrictions, RFC test vectors, and storage round-trip tests |
 | No maintained RFC 8785 library passes the adoption check | Canonicalization cannot be implemented as approved | Stop implementation for developer review and a new explicit decision |
 | Retention may conflict with verification | Legitimate archival could appear as tampering | Payload-purge retention keeps the chain verifiable from genesis, and retention events record what was archived (FR-5) |
-| The authorization rule for missing payload values is unresolved | Verification cannot yet distinguish purged or redacted values from unauthorized removals, which blocks full retention, redaction, and export verification | Resolve the rule in the security design before implementing that verification |
-| Public callers could impersonate retention or redaction system events | Forged authorization for removed payload values | Principle that public callers cannot impersonate system events (FR-1); enforcement mechanism deferred to the security design |
+| Missing-value authorization relies on system events | An attacker with database write access could forge an authorizing event after the latest checkpoint | Authorizing events must pass integrity checks (FR-3); the same checkpoint window limitation as any record (FR-4) |
+| Public callers could impersonate retention, redaction, or export system events | Forged authorization for removed payload values | Reserved system-event namespace enforced by the service layer, with `422` for public attempts (FR-1); optional database constraint |
+| A signing key is compromised | An attacker could sign new or back-dated checkpoints and exports, because there is no trusted timestamp | Keep keys out of the database and source control; `keyId` design supports rotation; production key lifecycle deferred |
+| An API key is compromised | Actions within that key's capabilities, attributed to its principal through `recordedBy` | Store only hashed keys; least-privilege capability bundles (NFR-2); production identity-provider integration out of scope |
+| Prototype regulators have access to all client accounts (SC-A5) | Broader regulator access than a production policy would allow | Documented as a prototype assumption; limiting access to specific accounts is a production consideration (FR-8) |
 | `redactedPaths` is derived from missing values | A value removed without authorization also appears as redacted in responses | Document the limitation; verification determines legitimacy (FR-2, FR-3) |
-| The redaction reason may contain sensitive text | Sensitive data retained in the redaction event | Operator guidance that the reason must not contain the redacted value (FR-6); redaction of system events deferred |
+| The redaction reason may contain sensitive text | Sensitive data retained in the redaction event until retention purges it | Operator guidance that the reason must not contain the redacted value (FR-6); system events cannot be redacted in the prototype |
 | A broken chain blocks all exports | No signed export is available after tampering, because an append-only chain cannot be repaired | Accepted consequence of never signing unverified data (FR-7); account for it in demonstration order |
 | Redaction may conflict with immutability | Sensitive data removal could invalidate integrity | Salted per-value commitments keep `contentHash` stable (FR-6) |
 | Payload keys and structure remain visible after redaction | Limited metadata disclosure | Document as a known limitation |
@@ -642,11 +738,14 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 | Hash-chain integrity | Unit/integration/property tests showing that each covered field affects the correct hash, plus genesis and chain-link verification scenarios |
 | Concurrent writes | Concurrency tests showing that parallel appends produce contiguous sequences and an intact chain, and that the database constraints reject a forced fork |
 | Rewrite/tamper detection | Controlled datastore modification and verification demonstration covering modification, middle deletion, insertion, reordering, tail truncation, and full rewrite (the last two against a signed checkpoint) |
-| Verification | Tests of the v1 response fields, violation types, `violationCount`, empty-chain behavior, and absence of payload values, payload keys, `actorId`, `resourceId`, and `recordedBy` |
+| Verification | Tests of the v1 response fields, violation types, `violationCount`, empty-chain behavior, the missing-value authorization rule, and absence of payload values, payload keys, `actorId`, `resourceId`, and `recordedBy` |
+| Authentication | Tests of Bearer API-key authentication, `401` for missing or invalid credentials, hashed key storage, `recordedBy` set from the principal ID, and unauthenticated health endpoints |
+| Authorization | Tests of the prototype capability matrix, `403` for missing capabilities, and authorization checked before resource lookup |
+| System events | Tests that public submissions of reserved event types are rejected with `422`, that system events cannot be redacted, and that redaction and export events inherit their identifying fields as specified |
 | Retention | Retention execution plus post-retention verification, showing the retention event and `upToSequence`, payload purge with immutable records retained, resumption of an interrupted purge, and no event when nothing is eligible |
 | Redaction | Redaction execution plus integrity and auditability verification, showing that `contentHash` is unchanged, remaining values verify against their commitments, the redacted value and salt are removed, value deletion and the redaction event are atomic, partial and repeated redaction behave as specified, archived records are rejected, and pointer and reason errors do not echo input |
-| Export | Export generation plus standalone verification, covering each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest, refusal to sign when verification fails, and an empty result |
-| Scenario C | Clarified interpretation, documented scope, implementation evidence, and explicit scope-outs |
+| Export | Export generation plus standalone verification, covering `POST` with `export:create`, each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest including `requestedBy`, the export audit event and `503` when it cannot be appended, missing-value authorization in the verifier, refusal to sign when verification fails, and an empty result |
+| Scenario C | Clarified interpretation, documented assumptions and scope, configuration-driven `CLIENT_ACCOUNT` validation (with reserved system events exempt), demonstration data, tests, and explicit scope-outs |
 | Security | Authorization/privilege tests and security review |
 | Quality | Linting, automated tests, integration validation, and performance measurements |
 | Documentation | Setup, architecture, scenarios, assumptions, limitations, trade-offs, and engineering summary |
@@ -656,28 +755,29 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 
 This document represents the **developer-authored draft requirements baseline** established before substantive AI-assisted design and implementation.
 
-The `Source` classifications distinguish assignment-required behavior (`Assignment`), developer-derived engineering requirements (`Developer-derived`), and technical design decisions approved in focused engineering discussions (`Design decision`). Established engineering conventions are identified where they are used (NFR-1, NFR-7).
+The `Source` classifications distinguish assignment-required behavior (`Assignment`), developer-derived engineering requirements (`Developer-derived`), and technical design decisions approved in focused engineering discussions (`Design decision`). Established engineering conventions are identified where they are used (NFR-1, NFR-7). Prototype assumptions, prototype security boundaries, and production-only considerations are labeled where they appear (FR-8, NFR-2).
 
 Requirements requiring technical design decisions are intentionally not finalized here. Those decisions will be evaluated through focused engineering analysis, with the developer retaining final responsibility for acceptance or rejection.
 
-Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), and retention, redaction, and export decisions (Focused Discussion #3) have been incorporated. The following remain open:
+Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), retention, redaction, and export decisions (Focused Discussion #3), and security and Scenario C decisions (Focused Discussion #4) have been incorporated. The following remain open:
 
-- Security design and Scenario C:
-  - authentication mechanism, `recordedBy` format, database roles and privileges, and the privileged path for tampering demonstrations;
-  - roles and authorization for retention, redaction, export, and verification, including separation of duties and any second approver;
-  - the enforcement mechanism that stops public callers impersonating system events, and the internal or system identity;
-  - how system events populate `eventType`, `actorId`, `resourceType`, and `resourceId`;
-  - the authorization rule for `PAYLOAD_VALUE_MISSING`;
-  - whether system events can themselves be redacted;
-  - whether export operations are audited, `GET` versus `POST` for export, and client-data access rules.
-- Checkpoint and key design: checkpoint lifecycle and timing, format, and storage mechanics; the export signature algorithm, `keyId` semantics, and whether exports use the checkpoint key; and key lifecycle, storage, and distribution.
-- Implementation planning:
+- **Security:**
+  - database roles and privileges, and the privileged path for tampering demonstrations;
+  - whether a separate internal identity is needed, which depends on the retention trigger.
+- **Checkpoint and key design:**
+  - checkpoint lifecycle, timing, format, and storage mechanics;
+  - whether checkpoint and export signing keys are separate;
+  - the production key lifecycle, storage, and distribution.
+- **Implementation planning:**
   - selection of the canonicalization library, subject to the adoption check;
-  - the retention trigger mechanism;
-  - the endpoint paths for redaction and retention;
-  - the exact manifest schema;
+  - validation and approval of the `cryptography` dependency;
+  - the retention trigger mechanism, and how retention events identify their resource;
+  - the redaction endpoint path, and any retention endpoint;
+  - the exact manifest schema and export audit event payload;
   - the exact commitment encoding;
+  - the reserved namespace prefix, the access-event vocabulary, and the configuration layout;
   - table and schema names;
   - retention batch size, export size limit, and reason length.
+- **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 
-Scenario C remains intentionally open until its business meaning and implementation boundary are clarified through the documented requirements-brainstorming process.
+Scenario C remains open to stakeholder clarification regarding its business meaning and production requirements; the prototype proceeds using the documented developer assumptions and implementation boundary.

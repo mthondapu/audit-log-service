@@ -258,3 +258,88 @@ with Discussions 1 and 2.
 
 **Sign-off:** I gave my first Discussion 3 dispositions at 10:30 UTC and the N1–N15 dispositions at 11:29 UTC, and
 approved the final reconciled Discussion 3 decision set on 2026-09-28 at 11:31 UTC.
+
+### 2026-09-28 — Focused Discussion 4: security and Scenario C
+
+**Date/Time:** 2026-09-28, 11:56–12:11 UTC (from session timestamps: discussion requested at 11:56; S1–S26
+dispositions given at 12:07; C-1 and C-2 decided at 12:11).
+
+**Activity:** Security and Scenario C design discussion (documentation only), followed by a reconciliation of my
+decision set and explicit developer decisions.
+
+**What I asked:** I asked Claude to analyze authentication, authorization, the protection of system events,
+`actorId`/`recordedBy` usage, redaction authorization, redaction of system events, missing-value authorization,
+the meaning of "access" in Scenario C, a prototype boundary for Scenario C, export authorization and auditing,
+signing keys and security failure behavior, without deciding for me. I then asked Claude to reconcile my
+dispositions against Discussions 1–3.
+
+**What the AI produced:**
+
+- An analysis and decision matrix (S1–S26), including:
+  - options for authentication and for preventing impersonation of system events;
+  - a capability model;
+  - field mappings for system events;
+  - a proposed rule for authorizing missing values;
+  - interpretations of "access", separating access to business data from access to the audit log itself;
+  - stakeholder questions, a draft clarified statement and assumptions SC-A1–SC-A8;
+  - options for export auditing and signing keys.
+- A key finding: no mechanism stops an attacker with database write access from forging authorizing events beyond
+  the existing checkpoint window, so the reserved namespace is aimed at public callers.
+- A reconciliation that found my decision set consistent with Discussions 1–3, with two dependencies:
+  - C-1: the Scenario C validation would have rejected redaction events that inherit `CLIENT_ACCOUNT` fields;
+  - C-2: how export audit events fill their identifying fields was not yet decided.
+
+**What I decided:**
+
+- Approved: S1–S4 (API keys, principal-based `recordedBy`, unauthenticated health endpoints, capability-based
+  authorization), S6 and S7 (reserved namespace, `422`), S10–S12 (redaction authorization, separation of duties as a
+  production requirement, system events not redactable), S17, S18, S20 (`POST` export), S25 and S26.
+- Modified:
+  - S5: the role model is a prototype security boundary, not an assignment requirement or a production design.
+  - S8: redaction events inherit the target's identifying fields, with the operator in `recordedBy`; retention
+    events' resource identity is left as a design detail.
+- Approved in principle: S13 and S14 (missing-value authorization, offline verifier check), S19 (export audit
+  event, `503` on failure), S21 (`requestedBy` in the manifest, recorded as a change to the Discussion 3 manifest
+  direction), S22 (Ed25519 for exports, with the `cryptography` dependency to be approved during implementation
+  planning), S24 (`keyId` fingerprint and rotation design).
+- Approved as a prototype clarification and prototype assumptions: S15 and S16. The Scenario C interpretation of
+  "access" and SC-A1–SC-A8 are recorded separately from the assignment's confirmed requirement. Global regulator
+  access, denied-attempt auditing, per-read chain events, a specific regulation and a retention period are not
+  presented as confirmed requirements.
+- Deferred: S9 (internal identity, which depends on the retention trigger) and S23 (separate checkpoint and export
+  keys).
+- Resolved the reconciliation dependencies:
+  - C-1: the `CLIENT_ACCOUNT` validation applies only to events submitted through the public API; reserved system
+    events are exempt.
+  - C-2: export audit events inherit their identifying fields from the export scope, with fixed server-defined
+    values for fields the scope does not supply.
+
+**Rationale:**
+
+- The prototype needs a clear, testable authorization boundary without enterprise identity infrastructure. The
+  role model is therefore labeled a prototype boundary.
+- A reserved namespace blocks public callers from impersonating system events without changing hash coverage.
+- Inheriting identifying fields keeps `actorId` as the business actor and makes redaction and export events appear
+  in exports of the affected actor or resource.
+- Exports are recorded because they are bulk disclosures of audit data. That side effect is why the method is
+  `POST`.
+- Scenario C assumptions are kept separate from the assignment's wording, because the requirement is deliberately
+  under-specified.
+
+**Result:** `docs/requirements.md`:
+
+- §2 and §3 row 3 updated;
+- FR-1 authentication, reserved namespace, system-event fields and the Scenario C validation reference added;
+- FR-2 to FR-5 capability references and the FR-3 missing-value rule added;
+- FR-6 redaction security, and FR-7 export security, signing, `requestedBy` and `POST`, added;
+- FR-8 rewritten with the confirmed requirement, the prototype clarification, the assumptions, the scope and the
+  production considerations;
+- NFR-2 authentication, authorization and denied-attempt handling added;
+- assumption 10, out-of-scope items, two Scenario C questions, risk rows and validation rows added;
+- §13 open items updated.
+
+**Validation:** No application code or tests were changed. Validation at this stage is my review of the analysis and
+reconciliation before deciding, and of the requirements diff for consistency with the assignment and with
+Discussions 1–3.
+
+**Sign-off:** I gave the S1–S26 dispositions on 2026-09-28 at 12:07 UTC and decided C-1 and C-2 at 12:11 UTC.
