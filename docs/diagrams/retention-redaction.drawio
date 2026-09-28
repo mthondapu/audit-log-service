@@ -1,0 +1,190 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="retention-redaction" name="Retention and Redaction">
+    <mxGraphModel dx="1300" dy="1080" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1260" pageHeight="1040" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="&lt;b&gt;Retention and Redaction — removing payload values without breaking the chain&lt;/b&gt;" style="text;html=1;align=left;verticalAlign=middle;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="20" y="0" width="900" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_ret" value="Retention run — POST /audit/retention-runs (synchronous, bounded)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="40" width="600" height="800" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_red" value="Redaction — POST /audit/events/{id}/redactions (atomic)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="40" width="600" height="800" as="geometry" />
+        </mxCell>
+        <mxCell id="r1" value="Authenticate; require retention:run (before resource lookup)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="300" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="r1b" value="Validate request and configuration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="140" width="300" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="r1x" value="422 — invalid request,&lt;br&gt;configuration, or input" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="370" y="140" width="230" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="r2" value="Under the append lock: cutoff = database clock − retention window;&lt;br&gt;find the highest eligible sequence" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="200" width="300" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="r3" value="New records&lt;br&gt;eligible?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="275" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r10" value="Unfinished purge&lt;br&gt;exists?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="385" y="275" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r9" value="No retention event is created;&lt;br&gt;200 OK — &quot;nothing eligible&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="370" y="375" width="230" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="r4" value="Append retention system event (cutoff, upToSequence);&lt;br&gt;recordedBy = operator; establishes the archived boundary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="370" width="300" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="r5" value="Purge recoverable values and salts at or below the boundary&lt;br&gt;(within the configured bound)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="450" width="300" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="r6" value="Completed within&lt;br&gt;the bound?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="530" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r8" value="503 Service Unavailable —&lt;br&gt;bound prevents completion;&lt;br&gt;committed work kept; resumable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="370" y="535" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="r13" value="New retention event&lt;br&gt;recorded in this run?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="630" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r7" value="201 Created" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="30" y="750" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r14" value="200 OK —&lt;br&gt;resumed purge completed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="210" y="750" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="re1" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="r1" target="r1b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re1x" value="invalid" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r1b" target="r1x">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re2" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="r1b" target="r2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re2b" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="r2" target="r3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re3" value="no" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r3" target="r10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re10no" value="no" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r10" target="r9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re10yes" value="yes: resume purge&lt;br&gt;(no new retention event)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="r10" target="r5">
+          <mxGeometry x="0.35" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="608" y="310" />
+              <mxPoint x="608" y="478" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="re4" value="yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r3" target="r4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re5" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="r4" target="r5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re6" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="r5" target="r6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re8" value="no" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r6" target="r8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re7" value="yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="r6" target="r13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re13yes" value="yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="r13" target="r7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="re13no" value="no (resumed)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="r13" target="r14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="d1" value="Authenticate; require events:redact (before resource lookup)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="90" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d2" value="Validate JSON Pointers and reason&lt;br&gt;(422, errors identified by position)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="160" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d3" value="Under the append lock: load target record" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="230" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d3x" value="404 Not Found" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="230" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d4" value="System event&lt;br&gt;or archived?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="750" y="300" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="d4x" value="409 Conflict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="310" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d5" value="Resolve pointers against the committed structure&lt;br&gt;(invalid or nonexistent → 422)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="390" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d6" value="Any covered value&lt;br&gt;still present?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="750" y="460" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="d6x" value="409 Conflict&lt;br&gt;(nothing new; no event)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="465" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d7" value="Delete covered value and salt rows&lt;br&gt;(only values not yet redacted)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="550" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d8" value="Append redaction system event: target, paths, reason (never values);&lt;br&gt;inherits actorId / resourceType / resourceId; recordedBy = operator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="620" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d9" value="COMMIT atomically → 201 Created + Location" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="700" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="de1" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d1" target="d2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de2" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d2" target="d3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de3" value="missing" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="d3" target="d3x">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de4" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d3" target="d4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de5" value="yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="d4" target="d4x">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de6" value="no" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="d4" target="d5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de7" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d5" target="d6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de8" value="no" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="d6" target="d6x">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de9" value="yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="d6" target="d7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de10" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d7" target="d8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="de11" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="d8" target="d9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_ver" value="Verification (requirements FR-3)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#82b366;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="860" width="1220" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="v1" value="&lt;b&gt;Immutable record unchanged&lt;/b&gt;&lt;br&gt;contentHash covers the committed structure (commitments), not raw values" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="900" width="360" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="v2" value="&lt;b&gt;Missing value authorized&lt;/b&gt; if the record is at or below the retention boundary, or a later valid reserved redaction event names the target and covers the pointer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="460" y="900" width="380" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="v3" value="&lt;b&gt;Otherwise PAYLOAD_VALUE_MISSING&lt;/b&gt;&lt;br&gt;reported by sequence and recordId only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="900" width="340" height="90" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -89,14 +89,14 @@ Authorized privacy or retention operations that change the representation of sto
 
 System events (principle from Focused Discussion #3; mechanism decided in Focused Discussion #4):
 
-- **Recording.** Retention, redaction, and export operations are recorded as system events in the same audit chain (FR-5, FR-6, FR-7).
+- **Recording.** Retention, redaction, and export operations are recorded as system events in the same audit chain (FR-5, FR-6, FR-7). A retention event is recorded when a new retention boundary is established; a retention run that only resumes an unfinished purge does not create another retention event.
 - **Reserved namespace.** System events use a reserved event-type namespace, enforced by the service layer. A public caller that submits a reserved event type receives `422`, so it cannot impersonate a system event. A database constraint may be added as defense in depth. No new hashed field is introduced; hash coverage is unchanged (NFR-1). The exact namespace prefix is an implementation detail.
 - **Fixed schemas.** System-event payloads use fixed, server-defined schemas. In the prototype, system events cannot be redacted (FR-6).
 - **Identity fields.** `actorId` remains the business actor and `recordedBy` the authenticated technical caller. Neither is reinterpreted as a separate operator field.
   - Redaction events inherit `actorId`, `resourceType`, and `resourceId` from the target record, and the operator is recorded in `recordedBy`.
   - Export audit events inherit their identifying fields from the export scope (FR-7).
   - How retention events identify their resource is an implementation and design detail.
-- **Internal identity.** Whether a separate internal identity is needed, for example when retention runs without an authenticated caller, is deferred together with the retention trigger (FR-5).
+- **Internal identity.** No separate internal identity is used in the prototype. The retention operation records its authenticated operator principal in `recordedBy` (FR-5).
 
 ### FR-2 — Query Audit Events
 
@@ -138,7 +138,7 @@ Record representation (design decision, Focused Discussion #3). In every respons
 
 - `payload` remains a JSON object that preserves the payload's structure; values that are no longer available (redacted or purged by retention) are rendered as `null`;
 - `redactedPaths` lists the JSON Pointers (RFC 6901) of redacted values, and is empty when none are redacted, so that a redacted value is distinguishable from a genuine JSON `null`; and
-- `archived` indicates whether the record is archived, in which case all payload values have been purged.
+- `archived` indicates whether the record is archived, meaning it is covered by a committed retention event; its payload values are no longer available, even if bounded physical purge work is still in progress or will resume in a later run (FR-5).
 
 `redactedPaths` and `archived` are derived response fields. They are not covered by any integrity hash (NFR-1). Because `redactedPaths` is derived from which values are missing, a value removed without authorization would also appear in it; verification (FR-3), not the response representation, determines whether a removal was legitimate.
 
@@ -215,7 +215,13 @@ Limitation: records appended after the latest checkpoint can be rewritten, fabri
 
 Per-record signatures are not used.
 
-Creating checkpoints requires the `checkpoint:create` capability (NFR-2). Checkpoint lifecycle and timing, checkpoint format, storage mechanics, and key-management details remain deferred.
+Checkpoint creation (design decision):
+
+- checkpoints are created through an authorized CLI operation, not a public HTTP endpoint, and creation requires the `checkpoint:create` capability (NFR-2);
+- the CLI verifies the audit chain before signing, and refuses to create or sign a checkpoint when verification fails; and
+- checkpoint signing and storage are outside the audit database.
+
+The CLI syntax, checkpoint artifact format, storage location, lifecycle and timing, and key-management details remain deferred.
 
 ### FR-5 — Retention
 
@@ -240,10 +246,21 @@ Integrity principles (design decision):
 Retention model (design decision, Focused Discussion #3):
 
 - **Payload purge.** Retention purges the recoverable payload values of archived records together with their salts. Immutable audit records remain, including metadata such as `actorId`, `resourceId`, `eventType`, and timestamps. Physical deletion of audit records is future work and is not part of the current implementation.
-- **Retention events.** Retention does not update individual audit records. Each retention run appends a system event that records the retention cutoff and `upToSequence`. Records covered by the highest applicable retention event are archived. Eligibility is based on `recordedAt` from the database clock, so archived records always form the oldest contiguous block of the chain. `sequence` is never renumbered.
+- **Retention events.** Retention does not update individual audit records. A retention system event recording the retention cutoff and `upToSequence` is appended only when a run establishes a new retention boundary. Records covered by the highest applicable retention event are archived. Eligibility is based on `recordedAt` from the database clock, so archived records always form the oldest contiguous block of the chain. `sequence` is never renumbered.
 - **Verification.** Verification continues from genesis under this model. Purged values are authorized by retention events under the missing-value authorization rule (FR-3).
-- **Processing and recovery.** Under the append lock, the eligible boundary is determined and the retention event appended. Recoverable values are then purged in resumable batches; an interrupted purge can be safely resumed. If nothing is eligible, no retention event is appended.
-- **Configuration.** The retention window and the purge batch size are configurable; their values are implementation details. The prototype uses a simple trigger, whose exact mechanism is deferred to implementation planning. Scheduling is future work. Retention requires the `retention:run` capability (NFR-2). Whether a separate internal identity is needed depends on the retention trigger, and is deferred with it.
+- **Processing and recovery.** In the prototype, retention is a synchronous, bounded operation; no asynchronous job infrastructure is used.
+  - Under the append lock, the eligible boundary is determined and, if it is new, the retention event is appended.
+  - Recoverable values are then purged within the configured bound.
+  - An unfinished purge is resumable. If a run finds no newly eligible records but an unfinished purge exists, it resumes that purge without appending another retention event.
+- **Status behavior.**
+  - `201 Created` when a new retention event is recorded and its purge completes;
+  - `200 OK` when an unfinished purge is resumed and completes;
+  - `200 OK` when nothing is eligible and no unfinished purge exists (no retention event is created);
+  - `422` for an invalid request, configuration, or input; and
+  - `503` when the configured execution bound prevents completion. Committed work remains, and a later run resumes the purge.
+
+  The response schema is not final.
+- **Configuration and authorization.** The retention window, the purge batch size, and the execution bound are configurable; their values are implementation details. Scheduling is future work. Retention requires the `retention:run` capability (NFR-2), and the authenticated operator principal is recorded in `recordedBy`.
 
 Archived-record visibility and representation are defined in FR-2.
 
@@ -287,7 +304,7 @@ Redaction design (design decision, Focused Discussion #3):
   - `400` for a malformed body;
   - `404` when the target record does not exist;
   - `422` for unknown fields, invalid or nonexistent pointers, or an invalid reason; pointer errors identify the pointer by its position in the request, without echoing it;
-  - `409` when no new values would be redacted or the target is archived; and
+  - `409` when no new values would be redacted, the target is archived, or the target is a system-generated retention or redaction event; and
   - `401` / `403` by convention.
 
   The operation's endpoint path is not finalized.
@@ -332,8 +349,9 @@ Export design (design decision, Focused Discussion #3):
 - **Verifier.** A standalone verifier and a documented verification algorithm shall be provided. The recipient shall not need the live service. The verifier:
   - validates the manifest signature;
   - recomputes value commitments, `contentHash`, and `recordHash`;
-  - checks the records against the manifest list and count; and
-  - validates the authorization of missing values (FR-3) when the authorizing events are present in the export (approved in principle, Focused Discussion #4).
+  - checks the records against the manifest list and count;
+  - validates the authorization of missing values (FR-3) when the authorizing events or signed retention evidence are present in the export (approved in principle, Focused Discussion #4); and
+  - when checkpoint artifacts are supplied, verifies their signatures and uses the trusted checkpoint during export verification (FR-4).
 
   Verification output never exposes sensitive payload values.
 - **Status behavior.** Errors use RFC 9457 Problem Details:
@@ -351,7 +369,8 @@ Signed manifest (approved in principle, Focused Discussion #3):
 - The manifest binds: `format`, `scheme`, `scope`, `asOfSequence`, `asOfRecordHash`, `generatedAt`, a completeness statement (all matching records, including archived records, as of `asOfSequence`), `recordCount`, and a `records` list of `sequence`, `id`, and `recordHash`.
 - It is signed over its RFC 8785 canonical form under a domain label, with the signature outside the signed content.
 - The manifest also includes `requestedBy`, the principal that requested the export. This was added in Focused Discussion #4 (approved in principle) and modifies the Focused Discussion #3 manifest direction; it was not part of that original direction.
-- The exact manifest schema is not final.
+- The manifest includes retention evidence sufficient for an independent verifier to determine whether missing archived payload values are authorized by retention. This evidence is inside the signed content, so it cannot be altered without invalidating the signature. *(Design decision)*
+- The exact manifest schema, including the representation of the retention evidence, is not final.
 - Including the intervening chain entries is documented as an alternative and future extension.
 
 Export security (Focused Discussion #4):
@@ -413,7 +432,15 @@ Append-only and tamper-evident behavior shall not depend solely on application-l
 
 The final implementation shall include appropriate datastore-level protections against unauthorized modification or deletion.
 
-This is a developer-derived engineering control supporting the assignment's integrity objective. Database roles, privileges, and the privileged path for tampering demonstrations remain open (§13).
+This is a developer-derived engineering control supporting the assignment's integrity objective.
+
+**Database privilege boundaries (design decision):**
+
+- normal application operation, database ownership and migrations, and privileged tamper demonstrations use separate database privilege boundaries;
+- the application cannot update or delete immutable audit records; and
+- privileged tamper operations are outside the normal application path.
+
+Exact roles, grants, and provisioning are implementation details (§13).
 
 #### Integrity design
 
@@ -445,7 +472,7 @@ The following were approved in Focused Discussion #2. Each item is marked as an 
 - `recordedAt` is taken from the database clock after locking, and clamped so it never goes backwards.
 - A lock timeout bounds waiting. The server does not retry failed appends automatically.
 - `UNIQUE(sequence)` is required. `UNIQUE(previous_hash)` is defense in depth against a permanent fork.
-- There is no foreign key from `previous_hash` to `record_hash`, because retention can remove older records.
+- There is no foreign key from `previous_hash` to `record_hash`. Retention currently purges only payload values, but physical deletion of older records is future work and would break such a key.
 - The exact lock key and timeout values are implementation details.
 
 **Storage separation (design decision):** raw payload values are stored outside the immutable audit-record representation so that redaction and retention can remove them without modifying the immutable record. Values and salts are stored per value (FR-6); the exact tables are implementation details.
@@ -470,6 +497,7 @@ Authorization controls are developer-derived engineering requirements supporting
 
 - the prototype uses static API keys presented as Bearer credentials;
 - only SHA-256 hashes of keys are stored, and credentials are compared in constant time;
+- API-key configuration (key hashes, principal IDs, and capabilities) is supplied through mounted configuration outside the database, not stored in the database;
 - raw API keys shall never be committed;
 - each key maps to a configured, non-secret principal ID, which becomes `recordedBy` (FR-1); and
 - production identity-provider integration remains out of scope (§7).
@@ -741,10 +769,11 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 | Verification | Tests of the v1 response fields, violation types, `violationCount`, empty-chain behavior, the missing-value authorization rule, and absence of payload values, payload keys, `actorId`, `resourceId`, and `recordedBy` |
 | Authentication | Tests of Bearer API-key authentication, `401` for missing or invalid credentials, hashed key storage, `recordedBy` set from the principal ID, and unauthenticated health endpoints |
 | Authorization | Tests of the prototype capability matrix, `403` for missing capabilities, and authorization checked before resource lookup |
-| System events | Tests that public submissions of reserved event types are rejected with `422`, that system events cannot be redacted, and that redaction and export events inherit their identifying fields as specified |
-| Retention | Retention execution plus post-retention verification, showing the retention event and `upToSequence`, payload purge with immutable records retained, resumption of an interrupted purge, and no event when nothing is eligible |
+| System events | Tests that public submissions of reserved event types are rejected with `422`, that redacting a system event is rejected with `409`, and that redaction and export events inherit their identifying fields as specified |
+| Retention | Retention execution plus post-retention verification, showing the retention event and `upToSequence` and payload purge with immutable records retained. Status outcomes: `201` for a new event with completed purge; `200` for a resumed purge; `200` when nothing is eligible; `422`; and `503` when the execution bound prevents completion, followed by a successful resumed run. No duplicate retention event is created when a purge is resumed. |
+| Checkpoints | Checkpoint creation through the authorized CLI (`checkpoint:create`), including refusal to create or sign a checkpoint when chain verification fails |
 | Redaction | Redaction execution plus integrity and auditability verification, showing that `contentHash` is unchanged, remaining values verify against their commitments, the redacted value and salt are removed, value deletion and the redaction event are atomic, partial and repeated redaction behave as specified, archived records are rejected, and pointer and reason errors do not echo input |
-| Export | Export generation plus standalone verification, covering `POST` with `export:create`, each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest including `requestedBy`, the export audit event and `503` when it cannot be appended, missing-value authorization in the verifier, refusal to sign when verification fails, and an empty result |
+| Export | Export generation plus standalone verification, covering `POST` with `export:create`, each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest including `requestedBy`, the export audit event and `503` when it cannot be appended, offline verification using the signed retention evidence and supplied checkpoints, missing-value authorization in the verifier, refusal to sign when verification fails, and an empty result |
 | Scenario C | Clarified interpretation, documented assumptions and scope, configuration-driven `CLIENT_ACCOUNT` validation (with reserved system events exempt), demonstration data, tests, and explicit scope-outs |
 | Security | Authorization/privilege tests and security review |
 | Quality | Linting, automated tests, integration validation, and performance measurements |
@@ -762,22 +791,21 @@ Requirements requiring technical design decisions are intentionally not finalize
 Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), retention, redaction, and export decisions (Focused Discussion #3), and security and Scenario C decisions (Focused Discussion #4) have been incorporated. The following remain open:
 
 - **Security:**
-  - database roles and privileges, and the privileged path for tampering demonstrations;
-  - whether a separate internal identity is needed, which depends on the retention trigger.
+  - exact database roles and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1).
 - **Checkpoint and key design:**
-  - checkpoint lifecycle, timing, format, and storage mechanics;
+  - the checkpoint CLI syntax, and the checkpoint lifecycle, timing, artifact format, and storage location;
   - whether checkpoint and export signing keys are separate;
   - the production key lifecycle, storage, and distribution.
 - **Implementation planning:**
   - selection of the canonicalization library, subject to the adoption check;
   - validation and approval of the `cryptography` dependency;
-  - the retention trigger mechanism, and how retention events identify their resource;
+  - how retention events identify their resource, and the retention response schema;
   - the redaction endpoint path, and any retention endpoint;
-  - the exact manifest schema and export audit event payload;
+  - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the exact commitment encoding;
   - the reserved namespace prefix, the access-event vocabulary, and the configuration layout;
   - table and schema names;
-  - retention batch size, export size limit, and reason length.
+  - retention batch size and execution bound, export size limit, and reason length.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 
 Scenario C remains open to stakeholder clarification regarding its business meaning and production requirements; the prototype proceeds using the documented developer assumptions and implementation boundary.

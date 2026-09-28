@@ -1,0 +1,127 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="system-context" name="System Context">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="&lt;b&gt;Audit Log Service — System Context (prototype)&lt;/b&gt;" style="text;html=1;align=left;verticalAlign=middle;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="40" y="0" width="600" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_app" value="Application trust boundary (prototype deployment)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="40" width="620" height="570" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_store" value="Protected host storage (outside the database; not accessible to the tamper actor)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=#f9f7ed;strokeColor=#b09500;verticalAlign=top;align=left;spacingLeft=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="80" width="260" height="340" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_recipient" value="Recipient environment (no service, database, or service credentials)" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#82b366;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="40" width="390" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_tamper" value="Outside the application trust boundary" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#b85450;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="420" width="390" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="writer" value="&lt;b&gt;Participating business systems&lt;/b&gt;&lt;br&gt;(writers)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="auditor" value="&lt;b&gt;Auditor / Regulator&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="220" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="admin" value="&lt;b&gt;Administrator (operator)&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="340" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="service" value="&lt;b&gt;Audit Log Service&lt;/b&gt;&lt;br&gt;FastAPI modular monolith&lt;br&gt;(append, query, verify, redact,&lt;br&gt;retention, export)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="340" y="130" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cli" value="&lt;b&gt;Checkpoint CLI&lt;/b&gt;&lt;br&gt;(requires checkpoint:create)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="340" y="340" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;audit database" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="380" y="460" width="180" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="apikeys" value="API-key configuration&lt;br&gt;(key hashes, principals, capabilities)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="120" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="keys" value="Signing keys&lt;br&gt;(Ed25519, private)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="220" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="store" value="Checkpoint store&lt;br&gt;(signed checkpoints)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="320" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="recipient" value="&lt;b&gt;Export recipient&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="90" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="pubkey" value="Trusted public key&lt;br&gt;(obtained out of band)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="90" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="verifier" value="&lt;b&gt;Offline export verifier&lt;/b&gt;&lt;br&gt;independently runnable and verifiable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="220" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="tamper" value="&lt;b&gt;Tamper actor&lt;/b&gt;&lt;br&gt;privileged direct database access&lt;br&gt;(demonstrations only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="470" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="tamper_note" value="No access to the checkpoint store, signing keys, or API-key configuration" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="550" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" value="POST /audit/events&lt;br&gt;(Bearer key, events:write)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="writer" target="service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="query, verify, export&lt;br&gt;(Bearer key)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="auditor" target="service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="redaction, retention&lt;br&gt;(Bearer key)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="admin" target="service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="create checkpoint" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="admin" target="cli">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="application role&lt;br&gt;(no update/delete of&lt;br&gt;immutable records)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="service" target="db">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="read and verify chain&lt;br&gt;(before signing)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;dashed=1;" edge="1" parent="1" source="cli" target="db">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="read" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;dashed=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;" edge="1" parent="1" source="service" target="apikeys">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="sign" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;dashed=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" edge="1" parent="1" source="service" target="keys">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="write signed checkpoint" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cli" target="store">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="signed export bundle" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="service" target="recipient">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="470" y="20" />
+              <mxPoint x="1090" y="20" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" value="bundle" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="recipient" target="verifier">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="trust anchor" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="pubkey" target="verifier">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="read checkpoints" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;dashed=1;exitX=1;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="service" target="store">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="620" y="250" />
+              <mxPoint x="620" y="335" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" value="sign" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;dashed=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="cli" target="keys">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="630" y="355" />
+              <mxPoint x="630" y="265" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13" value="direct modification (outside the API)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;strokeColor=#b85450;fontColor=#b85450;dashed=1;" edge="1" parent="1" source="tamper" target="db">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

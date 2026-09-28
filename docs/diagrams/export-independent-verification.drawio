@@ -1,0 +1,156 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="export-verification" name="Export and Independent Verification">
+    <mxGraphModel dx="1400" dy="1300" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="1340" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="&lt;b&gt;Signed Export and Independent Verification — POST /audit/exports&lt;/b&gt;" style="text;html=1;align=left;verticalAlign=middle;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="20" y="0" width="760" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_service" value="Audit Log Service" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#6c8ebf;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="210" y="40" width="620" height="830" as="geometry" />
+        </mxCell>
+        <mxCell id="tb_store" value="Protected host storage" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#b09500;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="40" width="200" height="830" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_client" value="Auditor / Regulator" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="30" y="70" width="140" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_export" value="API + Export service" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="230" y="70" width="160" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_verify" value="Verification service" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="440" y="70" width="160" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_sign" value="Signing (Ed25519)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="650" y="70" width="160" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_db" value="PostgreSQL" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="860" y="70" width="160" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_store" value="Checkpoint store" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=0;collapsible=0;recursiveResize=0;outlineConnect=0;size=40;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="70" width="160" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="m1" value="1. POST /audit/exports {scope}" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="150" as="sourcePoint" />
+            <mxPoint x="310" y="150" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="n1" value="2. Authenticate; export:create (before lookup)&lt;br&gt;Validate scope (422); signing key available? (503)" style="shape=note;whiteSpace=wrap;html=1;size=10;align=left;spacingLeft=6;fontSize=10;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="165" width="290" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="m2" value="3. read-only snapshot; asOfSequence = head; count within bound (422)" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="250" as="sourcePoint" />
+            <mxPoint x="940" y="250" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m3" value="4. verify full chain up to asOfSequence" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="300" as="sourcePoint" />
+            <mxPoint x="520" y="300" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m4" value="5. read signed checkpoints" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="520" y="340" as="sourcePoint" />
+            <mxPoint x="1150" y="340" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m5" value="6. stream records (same snapshot)" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="520" y="380" as="sourcePoint" />
+            <mxPoint x="940" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m6" value="intact? (failure → 409, nothing signed)" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="520" y="420" as="sourcePoint" />
+            <mxPoint x="310" y="420" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m7" value="7. select matching records (incl. archived) + retention evidence" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="470" as="sourcePoint" />
+            <mxPoint x="940" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="n2" value="8. Build manifest: scope, asOfSequence, records,&lt;br&gt;requestedBy, retention evidence (inside the signed content)" style="shape=note;whiteSpace=wrap;html=1;size=10;align=left;spacingLeft=6;fontSize=10;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="485" width="330" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="m8" value="9. sign canonical manifest" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="570" as="sourcePoint" />
+            <mxPoint x="730" y="570" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m8r" value="signature + keyId" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="730" y="600" as="sourcePoint" />
+            <mxPoint x="310" y="600" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m9" value="10. end snapshot; under append lock append export audit event (sequence &gt; asOfSequence)" style="html=1;verticalAlign=bottom;endArrow=block;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="660" as="sourcePoint" />
+            <mxPoint x="940" y="660" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="n3" value="If the export audit event cannot be appended:&lt;br&gt;503, no bundle returned" style="shape=note;whiteSpace=wrap;html=1;size=10;align=left;spacingLeft=6;fontSize=10;fillColor=#ffffff;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="240" y="675" width="270" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="m10" value="11. 200 OK — signed bundle" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;fontSize=11;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="310" y="790" as="sourcePoint" />
+            <mxPoint x="100" y="790" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="tb_recipient" value="Recipient environment — no service, database, service credentials, or network access to the service" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#82b366;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="910" width="1230" height="400" as="geometry" />
+        </mxCell>
+        <mxCell id="bundle" value="&lt;b&gt;Export bundle&lt;/b&gt;&lt;br&gt;records + signed manifest" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="1000" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pubkey" value="&lt;b&gt;Trusted public key&lt;/b&gt;&lt;br&gt;obtained out of band (keyId)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="1110" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="verifier" value="&lt;b&gt;Offline export verifier&lt;/b&gt; (shares the integrity library)&lt;br&gt;&lt;i&gt;independently runnable: no live service, database, credentials, or network&lt;/i&gt;&lt;br&gt;1. verify manifest signature first&lt;br&gt;2. load supplied checkpoint files and verify their signatures;&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;establish the trusted checkpoint boundary&lt;br&gt;3. recompute value commitments from openings&lt;br&gt;4. recompute contentHash and recordHash&lt;br&gt;5. check record list and count against the manifest&lt;br&gt;6. validate missing-value authorization against signed retention evidence and included redaction events&lt;br&gt;7. use the trusted checkpoint boundary in export verification" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=10;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="990" width="560" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="checkpoints" value="&lt;b&gt;Checkpoint files&lt;/b&gt;&lt;br&gt;supplied signed checkpoint artifacts" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="1220" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r4" value="load and verify" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.9;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="checkpoints" target="verifier">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="280" y="1255" />
+              <mxPoint x="280" y="1197" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="report" value="&lt;b&gt;Verification report&lt;/b&gt;&lt;br&gt;integrity verified; completeness&lt;br&gt;is an attested claim of the signer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="1065" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="r1" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="bundle" target="verifier">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r2" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="pubkey" target="verifier">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r3" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="verifier" target="report">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="handoff" value="bundle delivered to recipient" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;fontSize=10;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" target="bundle">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="860" as="sourcePoint" />
+            <Array as="points">
+              <mxPoint x="100" y="940" />
+              <mxPoint x="140" y="940" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -343,3 +343,185 @@ reconciliation before deciding, and of the requirements diff for consistency wit
 Discussions 1–3.
 
 **Sign-off:** I gave the S1–S26 dispositions on 2026-09-28 at 12:07 UTC and decided C-1 and C-2 at 12:11 UTC.
+
+### 2026-09-28 — Architecture and design planning
+
+**Date/Time:** 2026-09-28, 12:27–12:56 UTC and the documentation work that followed (from session timestamps:
+architecture analysis requested at 12:27; reconciliation requested at 12:39; final decisions given and artifacts
+requested at 12:56).
+
+**Activity:** Developer-led, AI-assisted architecture analysis, reconciliation, and creation of the architecture
+documentation (no application code).
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to propose an architecture that satisfies the requirements baseline, then to
+reconcile it against my decisions, and finally to write `docs/architecture.md`, nine ADRs, and five Draw.io diagrams
+reflecting only the approved decisions.
+
+**What the AI produced:**
+
+- An architecture analysis covering components, flows, a logical data model, integrity and security mapping,
+  diagrams, ADR candidates, and a decision list (AD-1 to AD-12). Key findings:
+  - storing individual payload values as JSONB could change number representation and break commitment
+    verification;
+  - the HTTP status for redacting a system event was undefined;
+  - exports lacked retention evidence for offline authorization of archived values;
+  - the truncation and full-rewrite demonstrations depend on checkpoint creation.
+- A reconciliation that corrected the analysis:
+  - authorization is required before resource lookup, not necessarily before body validation;
+  - the offline verifier is independently runnable, not independently implemented;
+  - three separate database privilege boundaries;
+  - `ALTER TABLE ... DISABLE TRIGGER` removed from the architecture.
+
+  It also confirmed that `recordedAt` clamping was already approved in Discussion 2 (I7).
+- The documentation artifacts listed under Result.
+
+**What I decided:**
+
+- Approved: AD-1 (modular monolith, shared integrity library, separate verifier and tamper tooling), AD-2
+  (canonical JSON text value storage), AD-5 (retention via `POST /audit/retention-runs`, operator as `recordedBy`,
+  no internal identity), AD-6 (`409` for redacting a system event), AD-8 (API-key configuration file outside the
+  database), AD-9 (archived boundary derived from the chain), AD-11 (SQLAlchemy 2.x Core), and AD-12 (dependency
+  gates before the integrity and signing code; no in-house RFC 8785).
+- Approved with details deferred: AD-3 (explicit signed checkpoints outside the database), AD-10 (resource-oriented
+  endpoint direction).
+- Approved in principle: AD-4 (three privilege boundaries), AD-7 (retention evidence in exports).
+- RB-1: checkpoints are created by an authorized CLI requiring `checkpoint:create`, not a public endpoint.
+- RB-2: retention runs are synchronous and bounded. `201` when a new event is recorded and its bounded purge
+  completes; `200` when nothing is eligible, with no event; an error when the bound cannot be met; resumable by later
+  runs; no asynchronous jobs.
+- RB-3: retention evidence must be inside the signed export manifest.
+- Main diagrams use Draw.io, not Mermaid.
+
+**Rationale:** Keep the prototype simple (one service, one database), keep integrity logic testable and shared,
+keep trust anchors and tamper tooling outside the normal application path, and leave production concerns and
+unfinished details explicitly deferred.
+
+**Result:**
+
+- Created `docs/architecture.md`.
+- Created ADRs 0001–0009 under `docs/adr/`.
+- Created five Draw.io diagrams under `docs/diagrams/`: system context, component architecture, audit append and
+  integrity sequence, export and independent verification, and retention and redaction.
+- `docs/requirements.md` was not changed. Requirements affected by these decisions were reported to me for a
+  separate decision.
+
+**Validation:**
+
+- **Automated checks (by Claude):** all five `.drawio` files parse as well-formed XML, with no duplicate cell IDs and
+  no dangling references; all relative links in `architecture.md` and the ADRs resolve; a search found no
+  contradicting wording (for example `DISABLE TRIGGER`, Mermaid, or a claim that authorization must precede body
+  validation).
+- **Not yet done:** the diagrams have not been visually inspected in diagrams.net. No application code or tests
+  exist or were changed.
+- **Developer review:** of the documentation and diagrams, pending.
+
+**Sign-off:** I gave the final architecture decisions (AD-1 to AD-12, RB-1 to RB-3) on 2026-09-28 at 12:56 UTC.
+Review of the resulting documentation is pending.
+
+### 2026-09-28 — Architecture follow-up decisions, requirements reconciliation and documentation review
+
+**Date/Time:** 2026-09-28, 13:08–14:00 UTC (from session timestamps:
+- follow-up decisions given at 13:08;
+- diagram update requested at 13:20;
+- requirements reconciliation requested at 13:47;
+- FR-1/FR-2 clarification at 13:50;
+- read-only consistency review at 13:51;
+- consistency corrections at 13:54;
+- pre-commit review at 13:57;
+- this log entry requested at 14:00.)
+
+**Activity:** Developer-led, AI-assisted follow-up to the architecture work: recording approved decisions, updating
+diagrams, reconciling the requirements baseline, and reviewing the documentation for consistency. No application
+code.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to:
+
+- record my decisions on the open review items in the architecture documentation and ADRs;
+- update the two affected diagrams;
+- reconcile `docs/requirements.md` with the approved decisions using minimal edits;
+- clarify two requirement statements;
+- run read-only consistency and pre-commit reviews;
+- apply the corrections those reviews identified.
+
+**What the AI produced:**
+
+- Wording updates to `docs/architecture.md` (§10, §12, §13, §19, §21) and ADRs 0005, 0006 and 0007 recording my
+  decisions below.
+- Updates to `docs/diagrams/retention-redaction.drawio` (resumed-purge path, `422` validation step, `503` outcome,
+  distinct `201` and `200` outcomes) and `docs/diagrams/export-independent-verification.drawio` (supplied
+  checkpoint files, checkpoint signature verification, use of the trusted checkpoint, and the verifier's
+  independence from the service, database, credentials and network).
+- A minimal reconciliation of `docs/requirements.md`, covering:
+  - FR-1: no separate internal identity;
+  - FR-4: checkpoint CLI, verification before signing, refusal on failure;
+  - FR-5: the synchronous, bounded, resumable retention statuses;
+  - FR-6: `409` for redacting a system event;
+  - FR-7: signed retention evidence, and checkpoint use by the verifier;
+  - NFR-1: database privilege boundaries;
+  - NFR-2: API-key configuration outside the database;
+  - §12 and §13 updated accordingly.
+
+  Genuinely deferred items were kept deferred.
+- Two FR clarifications:
+  - FR-1: a retention event is recorded only when a new boundary is established, and resuming a purge creates no
+    event;
+  - FR-2: archived state comes from the committed retention event, while physical purge may still be in progress
+    or resume.
+- A read-only consistency review that found four stale wordings:
+  - architecture §7 (archived state);
+  - two diagram labels describing the checkpoint CLI as reading only the chain head;
+  - the NFR-1 foreign-key rationale.
+
+  It also noted that the `CLAUDE.md` documentation list and the FR-6 endpoint-path deferral lag the approved
+  direction.
+- Corrections for the four stale wordings. While editing one diagram label, Claude introduced an XML formatting
+  error; validation detected it and Claude fixed it before reporting.
+- A read-only pre-commit review that confirmed:
+  - all expected files are present;
+  - the diagrams are well-formed;
+  - `docs/assignment.md` is excluded and was never committed;
+  - no application code exists.
+
+  It also identified that this log did not yet cover the work above.
+
+**What I decided:**
+
+- Retention: a run with no newly eligible records resumes an unfinished purge without creating another retention
+  event. It returns `200` when the resumed purge completes, `200` when nothing is eligible and no purge is
+  unfinished, `422` for invalid request, configuration or input, and `503` when the configured bound prevents
+  completion; the work remains resumable. `201` is kept for a new retention event whose purge completes.
+- Checkpoint CLI: before creating and signing a checkpoint, it verifies the chain and refuses to sign if
+  verification fails.
+- Offline verifier: it can load supplied checkpoint artifacts, verify their signatures, and use the trusted
+  checkpoint during export verification, while remaining independently runnable.
+- I approved the requirements reconciliation scope, the FR-1/FR-2 clarifications and the four consistency
+  corrections. I chose to keep the FR-6 endpoint-path deferral and to leave `CLAUDE.md` unchanged.
+
+**Rationale:**
+
+- Resumable, bounded retention must never report success for incomplete work or create redundant events.
+- A checkpoint must never be created over a chain that is already known to be bad.
+- Offline verifiers need the trusted checkpoint to verify independently.
+- Requirements, architecture, ADRs and diagrams should agree before the documentation is committed.
+
+**Result:**
+
+- Updated: `docs/architecture.md`, ADRs 0005–0007, the two diagrams listed above, and `docs/requirements.md`.
+- Label corrections in `docs/diagrams/system-context.drawio` and `docs/diagrams/component-architecture.drawio`.
+- No application code exists or was changed.
+
+**Validation:**
+
+- **Automated checks (by Claude):** all five diagrams parse as well-formed XML with no duplicate cell IDs or
+  dangling references; links in `architecture.md` and the ADRs resolve; `git diff --check` reports no whitespace
+  errors; stale-wording searches found no remaining occurrences outside historical log text.
+- **Developer review:** I visually inspected the two diagrams updated at 13:20 and reported that they look good.
+  The two label-only edits made at 13:54 have not been separately re-inspected.
+- **Git:** Claude did not stage, commit, push or alter Git history. I perform all Git operations.
+
+**Sign-off:** I gave the follow-up decisions on 2026-09-28 at 13:08 UTC and approved each later step as requested
+above. My final review of the combined documentation diff before committing is pending.
