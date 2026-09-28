@@ -1079,3 +1079,152 @@ through `uv.lock`. No other dependencies were added.
 
 **Sign-off:** I approved option 1 for the numeric domain as recorded above. My review and sign-off of the Phase 2
 implementation are pending.
+
+### 2026-09-28 — Phase 3: pure integrity and hash-chain core
+
+**Date/Time:** 2026-09-28, from 16:14 UTC (from session timestamps: Phase 3 requested at 16:14; my decisions on the
+open encoding and verification points given at 16:17).
+
+**Activity:** Developer-led, AI-assisted implementation of the pure integrity core, with unit and property tests. No
+database, API, append-transaction, retention, redaction, export, or checkpoint functionality.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** implement canonicalization integration, `contentHash`, per-value salted payload commitments,
+`recordHash`, genesis and `previousHash` handling, domain-separated hashing, and pure chain verification, independent of
+PostgreSQL and HTTP. I asked Claude to stop if any byte-level encoding, the commitment formula, or the timestamp text
+was not finalized in the repository.
+
+**Clarifications before coding.** Claude checked the repository and stopped. The hash input encoding, the commitment
+formula, the timestamp and UUID text forms, and several verification rules were not finalized. It presented
+recommendations. My decisions (16:17 UTC):
+
+- **A1–A2:** every hash input is `SHA-256(UTF-8(label) || 0x00 || RFC8785(object))`. The labels are
+  `audit-log/v1/content`, `audit-log/v1/record`, and `audit-log/v1/commitment`. Checkpoint and manifest labels stay
+  deferred.
+- **A3–A4:**
+  - the `contentHash` object is `{id, eventType, actorId, resourceType, resourceId, timestamp, recordedAt, recordedBy,
+    payload}`, with `timestamp` null when absent;
+  - the `recordHash` object is `{sequence, previousHash, contentHash}`.
+- **A5:** the commitment is
+  `SHA-256(UTF-8("audit-log/v1/commitment") || 0x00 || RFC8785({"salt": <lowercase hex>, "value": <value>}))`.
+  - The salt is 128 bits from `secrets.token_bytes(16)`.
+  - Only scalar leaves are committed, and objects and arrays, including empty ones, stay structural.
+  - The JSON Pointer is not part of the commitment.
+- **A6–A7:**
+  - timestamps are written `YYYY-MM-DDTHH:MM:SS.ffffffZ`;
+  - UUIDs are written in lowercase hyphenated 8-4-4-4-12 form, and the version doesn't affect hashing.
+- **B1:** per-record precedence is `SEQUENCE_DUPLICATE`, `SEQUENCE_GAP`, `GENESIS_MISMATCH`, `PREVIOUS_HASH_MISMATCH`,
+  `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`. A malformed stored
+  hash counts as a mismatch of that hash.
+- **B2:**
+  - a first record other than sequence 1, or a sequence jump, is `SEQUENCE_GAP`;
+  - `GENESIS_MISMATCH` means sequence 1 doesn't link to the genesis value;
+  - links are checked against the record actually preceding it.
+- **B3 (deferred):** `PAYLOAD_VALUE_MISSING` is not implemented in Phase 3, and there is no authorized-missing input.
+  Only present values are verified.
+- **B4 (deferred):** `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` are not implemented, and there is no provisional anchor
+  interface.
+- **B5:** `recordedAt` regression means strictly earlier than the predecessor's value; equal values are valid.
+- **B6:** the pure result is `intact`, `recordsChecked`, `head`, `violationCount`, and `firstViolation` (`type`,
+  `sequence`, `recordId`). `scheme` is a constant. There is no `verifiedAt` and there are no API messages.
+
+**What the AI implemented** (`src/audit_log_service/integrity/`, no web, database, or configuration imports):
+
+- `canonical.py`:
+  - the single canonicalization boundary, delegating RFC 8785 to `rfc8785`;
+  - enforcement of the FR-1 numeric domain by value;
+  - errors from the library replaced with fixed messages, so values are never echoed;
+  - the labels and the labeled SHA-256 hash.
+- `timestamps.py`: formats aware datetimes as canonical UTC text, and parses and validates canonical text. Other forms
+  are rejected, not normalized.
+- `commitments.py`:
+  - CSPRNG salts;
+  - the commitment formula;
+  - `commit_payload`, which produces the committed structure plus values stored separately as canonical text and salt,
+    keyed by RFC 6901 pointer;
+  - a check that present values open their commitments.
+
+  Value and salt fields are excluded from `repr`.
+- `hashing.py`:
+  - the single genesis constant;
+  - `EventContent` and `AuditRecord`, with actor, resource, `recordedBy`, and payload excluded from `repr`;
+  - `compute_content_hash`, which validates the UUID, timestamp, and committed-structure forms;
+  - `compute_record_hash`;
+  - `seal_record`.
+- `verification.py`: `ViolationType` with the eight Phase 3 types in precedence order, and `verify_chain`, implementing
+  the rules above.
+- `errors.py`: `IntegrityInputError`, whose messages never include values.
+
+**Implementation choices within the approved decisions** (for my review):
+
+- A stored value is verified by parsing its canonical text under the FR-1 number rules and recomputing the commitment.
+  Text that isn't valid JSON, isn't a scalar, or is outside the numeric domain fails to open.
+- A value at a pointer that is not a commitment leaf fails to open.
+- If a predecessor's `recordedAt` is malformed, it can't be ordered. That predecessor is already reported for its own
+  `contentHash` mismatch, so no regression is reported for the next record.
+
+**Tests (163 new, 368 in total), in `tests/unit/integrity/`:**
+
+- **Property tests (14, using Hypothesis):**
+  - canonicalization: deterministic and idempotent output, and label separation;
+  - timestamps: the format round trip;
+  - commitments: determinism, a different salt gives a different commitment, a different value gives a different
+    commitment, and committed values open with no raw values in the structure;
+  - `contentHash`: determinism;
+  - `recordHash`: determinism, and changes when the sequence, `previousHash`, or `contentHash` changes;
+  - verification: a valid chain verifies, any single covered-field tamper is detected at its record, and any resealed
+    record is detected by its successor.
+- **Known-answer tests:** the content, record, and commitment formulas, checked against SHA-256 of literal hash input
+  bytes.
+- **Negative and security tests (about 112):**
+  - out-of-domain and non-JSON values;
+  - non-canonical timestamps and UUIDs;
+  - malformed salts and hashes;
+  - invalid sequences;
+  - tampered, swapped, and misplaced values;
+  - every violation type, including tampering with each covered field in turn, deletion, duplication, reordering,
+    forged insertion, and uppercase stored hashes;
+  - precedence and continuation;
+  - checks that errors and `repr` output don't reveal payload values, salts, payload keys, `actorId`, `resourceId`, or
+    `recordedBy`.
+- **Limitation tests:**
+  - tail truncation is not detectable without a checkpoint;
+  - missing payload values are not checked in this phase.
+
+**Documentation updates:**
+
+- `requirements.md`:
+  - the timestamp and UUID text forms (§3 rows 2 and 3);
+  - the hash input objects, the label encoding, and the labels (NFR-1);
+  - the verification precedence, sequence, genesis, and regression rules;
+  - the deferral notes for `PAYLOAD_VALUE_MISSING`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED` (FR-3);
+  - the commitment encoding (FR-6);
+  - "the exact commitment encoding" removed from §13.
+- `architecture.md`: the hash inputs in §8, the commitment formula and the `PAYLOAD_VALUE_MISSING` deferral in §9, and
+  "Commitment byte layout" removed from §21.
+- ADR-0002: the hash input encoding, objects, text forms, and verification rules.
+- ADR-0004: the commitment encoding and the deferral note.
+
+**Deferred:**
+
+- `PAYLOAD_VALUE_MISSING` and missing-value authorization, until retention and redaction;
+- `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED`, until checkpoints (so tail truncation remains undetected until then);
+- checkpoint and manifest labels;
+- API response formatting (`verifiedAt`, `anchor`, fixed messages).
+
+**Validation (performed by Claude, results as observed):**
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 368 passed, with 100% statement and branch coverage.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+- No dependencies were added.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the A1–A7 and B1–B6 decisions recorded above. My review and sign-off of the Phase 3 implementation
+are pending.

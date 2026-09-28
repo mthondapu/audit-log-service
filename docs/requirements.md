@@ -33,8 +33,8 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 | # | Requirement / Decision | Source | Rationale |
 |---|---|---|---|
 | 1 | The assignment's `timestamp` field shall be the optional, caller-supplied time at which the event occurred; if omitted, it is stored as null. The server always assigns the authoritative `recordedAt` recording time. | Assignment + Developer-derived | Keeps the assignment's field name while separating business occurrence time from authoritative recording time. |
-| 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. Both `recordedAt` and the caller-supplied `timestamp` shall be normalized to UTC and represented at fixed microsecond precision; the caller's original offset is not retained. Timestamps with more than six fractional-second digits shall be rejected. Timestamps shall be immutable once recorded. | Developer-derived + Design decision | Avoids ambiguous local times and gives a single representation for storage, hashing, and responses. |
-| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the configured non-secret principal ID of the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
+| 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. Both `recordedAt` and the caller-supplied `timestamp` shall be normalized to UTC and represented at fixed microsecond precision; the caller's original offset is not retained. The canonical text form is `YYYY-MM-DDTHH:MM:SS.ffffffZ`: UTC, exactly six fractional digits, and a `Z` suffix; hash inputs use exactly this form. Timestamps with more than six fractional-second digits shall be rejected. Timestamps shall be immutable once recorded. | Developer-derived + Design decision | Avoids ambiguous local times and gives a single representation for storage, hashing, and responses. |
+| 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID, written in lowercase hyphenated 8-4-4-4-12 form), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the configured non-secret principal ID of the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
 | 4 | `payload` shall be a JSON object conforming to the I-JSON profile (RFC 7493) used for canonical hashing; the resulting input restrictions are listed in FR-1. | Assignment + Developer-derived + Design decision | Supports structured querying, redaction, validation, and deterministic integrity processing. |
 | 5 | The audit history shall have a defined logical ordering, and concurrent appends shall preserve that ordering without conflicting chain histories. `sequence` starts at 1, is contiguous, is never renumbered, and defines chain order (NFR-1). | Assignment + Developer-derived + Design decision | Required for a reliable append-only integrity model. |
 | 6 | Each audit record shall contain `contentHash` (a hash of its own content), `previousHash` (a link to the preceding record), and `recordHash` (a hash binding the record to its chain position). The first record's `previousHash` is the genesis value: 64 lowercase hexadecimal zeros. Definitions are in NFR-1. | Assignment + Design decision | Establishes the hash-chain structure and its starting point, and keeps content integrity separate from chain-position integrity. |
@@ -161,7 +161,10 @@ Verification behavior (design decision):
 
 - verification scans the complete chain in `sequence` order against a consistent database snapshot;
 - verification starts at `sequence` 1 using the genesis value; under the current retention model (FR-5), verification always starts from genesis, and starting from an authenticated retention boundary is reserved for future physical deletion;
-- verification continues after the first violation, counting at most one violation per record, and reports the first violation and the total count; a complete list of violations is not returned in v1.
+- verification continues after the first violation, counting at most one violation per record, and reports the first violation and the total count; a complete list of violations is not returned in v1;
+- when several violations apply to one record, the reported type follows this precedence: `SEQUENCE_DUPLICATE`, `SEQUENCE_GAP`, `GENESIS_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`. A malformed stored hash, such as one of the wrong length or in uppercase, counts as a mismatch of that hash;
+- each record is checked against the record actually preceding it. A repeated `sequence` is `SEQUENCE_DUPLICATE`; a first record other than `sequence` 1, or any other `sequence` that is not the predecessor's plus one, is `SEQUENCE_GAP`; `GENESIS_MISMATCH` means `sequence` 1 has a `previousHash` other than the genesis value; and
+- `RECORDED_AT_REGRESSION` applies only when a record's `recordedAt` is strictly earlier than its predecessor's; equal values are valid.
 
 The v1 verification response shall contain:
 
@@ -176,9 +179,9 @@ The v1 verification response shall contain:
 | `violationCount` | Number of records with a violation |
 | `firstViolation` | `type`, `sequence`, `recordId`, and a fixed message; `null` when intact |
 
-Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`.
+Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. The mechanics of `ANCHOR_MISMATCH` and `CHAIN_TRUNCATED` are deferred to the checkpoint implementation (FR-4), together with the checkpoint format, trusted-anchor lifecycle, and signature semantics.
 
-`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value.
+`PAYLOAD_VALUE_MISSING` is accepted in principle for a payload value that is absent without authorization. Like other violations, it reports only `sequence` and `recordId`, never the JSON Pointer of the missing value. It is deferred to the retention and redaction implementation, which will finalize the authorization evidence; until then, verification checks only the payload values that are present.
 
 Missing-value authorization rule (approved in principle, Focused Discussion #4). A missing payload value is authorized when:
 
@@ -294,7 +297,7 @@ Known limitation: payload keys and structure (such as array lengths) remain visi
 Redaction design (design decision, Focused Discussion #3):
 
 - **Storage.** The immutable record holds the committed payload representation. Recoverable values and their salts are stored separately, per value; deleting a value deletes its salt. Table and schema names are implementation details.
-- **Commitments.** Per-value salted SHA-256 commitments use the approved RFC 8785, SHA-256, and `audit-log/v1` domain-label design (NFR-1). No additional canonicalization rule is introduced. The exact commitment encoding is fixed at implementation and documented for independent verifiers (FR-7).
+- **Commitments.** Per-value salted SHA-256 commitments use the approved RFC 8785, SHA-256, and `audit-log/v1` domain-label design (NFR-1). No additional canonicalization rule is introduced. The commitment is `SHA-256(UTF-8("audit-log/v1/commitment") || 0x00 || RFC8785({"salt": <salt>, "value": <value>}))`, written in lowercase hexadecimal, where the salt is 128 bits from a CSPRNG written as 32 lowercase hexadecimal characters. Scalar leaf values (strings, numbers, booleans, and null) receive individual commitments; objects and arrays remain structure, and empty ones are kept as they are. A value's JSON Pointer is not part of its commitment; its location is bound by `contentHash` through the committed structure. This encoding is documented for independent verifiers (FR-7).
 - **Addressing.** Values are addressed with RFC 6901 JSON Pointers. A request may contain multiple pointers, and a pointer to an object or array covers every value beneath it. An invalid or nonexistent pointer rejects the whole request.
 - **Redaction event.** Each redaction appends a separate system event that identifies the target record, the redacted paths, and the reason, and never contains the redacted values. It inherits `actorId`, `resourceType`, and `resourceId` from the target record, and the requesting operator is recorded in `recordedBy` (FR-1, System events).
 - **Atomicity.** Value deletion and the redaction event are committed atomically; a failed operation leaves no partial redaction. Concurrent redactions are serialized consistently with append concurrency (NFR-1).
@@ -458,13 +461,14 @@ The following were approved in Focused Discussion #2. Each item is marked as an 
 - `recordHash` covers `sequence`, `previousHash`, and `contentHash`.
 - `previousHash` is the `recordHash` of the record at `sequence − 1`, or the genesis value for `sequence` 1.
 - Content integrity is kept separate from chain-position integrity. No hash covers itself or any state that can legitimately change after recording, such as archive or redaction status.
+- The `contentHash` input is the canonical object `{id, eventType, actorId, resourceType, resourceId, timestamp, recordedAt, recordedBy, payload}`, using the API field names, with `timestamp` null when absent and `payload` the committed payload structure (FR-6). The `recordHash` input is the canonical object `{sequence, previousHash, contentHash}`, with `sequence` a JSON integer and the hashes lowercase hexadecimal strings.
 
 **Canonicalization and hashing:**
 
 - Records are canonicalized with RFC 8785 (JSON Canonicalization Scheme) over I-JSON (RFC 7493) input, restricted to the FR-1 numeric domain. *(Engineering convention)*
 - A maintained RFC 8785 library shall be used, subject to an implementation adoption check covering maintenance status, license, and conformance with the RFC 8785 test vectors. If no maintained library can be adopted without violating the approved canonicalization requirements, including the FR-1 numeric profile, implementation shall stop for developer review and a new explicit decision. *(Design decision)* The Phase 2 dependency gate adopted the `rfc8785` library; the outcome, and the numeric-domain decision it led to, are recorded in ADR-0002.
 - The hash algorithm is SHA-256, represented as lowercase hexadecimal. *(Engineering convention)*
-- Every hash input begins with a distinct, versioned domain label under the `audit-log/v1` scheme, and the scheme identifier is reported in verification output. *(Design decision)*
+- Every hash input begins with a distinct, versioned domain label under the `audit-log/v1` scheme, and the scheme identifier is reported in verification output. *(Design decision)* The hash input is `SHA-256(UTF-8(label) || 0x00 || RFC8785(object))`: the label's UTF-8 bytes, one zero byte as the label boundary, then the RFC 8785 canonical bytes. RFC 8785 defines the canonicalization; the label, separator, and FR-1 numeric domain are this service's own rules. The labels are `audit-log/v1/content`, `audit-log/v1/record`, and `audit-log/v1/commitment`; checkpoint and manifest labels are deferred.
 
 **Sequence and genesis (design decision):**
 
@@ -824,7 +828,6 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
 - **Implementation planning:**
   - how retention events identify their resource, and the retention response schema;
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
-  - the exact commitment encoding;
   - the reserved namespace prefix and the access-event vocabulary names;
   - exact environment-variable names, configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
   - table and schema names;

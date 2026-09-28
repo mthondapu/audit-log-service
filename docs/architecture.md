@@ -130,14 +130,16 @@ Database constraints (`UNIQUE(sequence)`, `UNIQUE(previous_hash)`, `UNIQUE(id)`)
 
 **Canonicalization and numeric domain.** Hash and signature inputs are canonicalized with the `rfc8785` library (ADR-0002), which serializes numbers as RFC 8785 requires. The service separately bounds every accepted JSON number to ±(2^53−1) by numeric value, whatever its notation (requirements FR-1). This bound is an application-level rule, not part of RFC 8785. RFC 8785 writes some whole-number doubles between 2^53 and 10^21 as plain integer digits, which would read back as integers outside the service's integer domain. With the bound in place, every accepted value canonicalizes to text that parses back under the same rules and canonicalizes to the same bytes, so stored canonical text and exports need no special verifier handling of RFC 8785's 10^21 formatting boundary.
 
+**Hash inputs.** Every hash input is `SHA-256(UTF-8(label) || 0x00 || RFC8785(object))`, where the zero byte is the label boundary. `contentHash` uses `audit-log/v1/content` over `{id, eventType, actorId, resourceType, resourceId, timestamp, recordedAt, recordedBy, payload}`; `recordHash` uses `audit-log/v1/record` over `{sequence, previousHash, contentHash}`; commitments use `audit-log/v1/commitment` (Section 9). Timestamps are written as `YYYY-MM-DDTHH:MM:SS.ffffffZ` and `id` as a lowercase hyphenated UUID; the integrity core rejects any other form instead of normalizing it.
+
 ## 9. Payload commitment and redaction model
 
 See [ADR-0004](adr/0004-redaction-commitments-and-value-storage.md) and [diagrams/retention-redaction.drawio](diagrams/retention-redaction.drawio).
 
-- **Commitments.** Each scalar payload value receives a cryptographically secure salt of at least 128 bits. Its commitment is computed with RFC 8785 and SHA-256 under a distinct domain label. The committed payload structure preserves keys and array shape, replacing each value with its commitment; `contentHash` covers this structure.
+- **Commitments.** Each scalar payload value receives a cryptographically secure salt of at least 128 bits. Its commitment is computed with RFC 8785 and SHA-256 under a distinct domain label. The committed payload structure preserves keys and array shape, replacing each value with its commitment; `contentHash` covers this structure. The commitment is `SHA-256(UTF-8("audit-log/v1/commitment") || 0x00 || RFC8785({"salt": <salt>, "value": <value>}))` with a 128-bit salt written as lowercase hex. Only scalar leaves are committed; empty objects and arrays stay as structure, and a value's JSON Pointer is bound by `contentHash`, not by its commitment.
 - **Value storage.** Each recoverable value is stored as its RFC 8785 canonical JSON text, together with its salt, keyed by record and JSON Pointer. Canonical text avoids number re-interpretation by JSONB that would break commitment verification. The committed structure contains only keys, arrays, and hexadecimal strings, so it may be stored as JSONB.
 - **Redaction transaction.** Under the append lock: load the target (`404` if absent); reject system-event targets and archived targets with `409`; resolve pointers (a pointer covers a value whose pointer equals it or starts with it followed by `/`); reject invalid or nonexistent pointers with `422`; reject with `409` if no value remains to redact; delete the covered value and salt rows; append the redaction system event; commit. The redaction event inherits `actorId`, `resourceType`, and `resourceId` from the target, and `recordedBy` is the operator.
-- **Verification.** `contentHash` is recomputed from the immutable record alone; each present value must open its commitment; each missing value must be authorized (Section 10) or is reported as `PAYLOAD_VALUE_MISSING`, identified only by `sequence` and `recordId`.
+- **Verification.** `contentHash` is recomputed from the immutable record alone; each present value must open its commitment; each missing value must be authorized (Section 10) or is reported as `PAYLOAD_VALUE_MISSING`, identified only by `sequence` and `recordId`. `PAYLOAD_VALUE_MISSING` is deferred to the retention and redaction implementation; until then, only present values are verified.
 
 ## 10. Retention model
 
@@ -292,7 +294,6 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Exact manifest schema and retention-evidence representation (inside the signed manifest).
 - Retention-run response schema.
 - Retention event resource identity; export audit event payload fields.
-- Commitment byte layout (to be documented for verifiers).
 - Reserved namespace prefix and access-event vocabulary names.
 - Exact environment-variable names and configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
 - Table and column names, exact database grants, limits, batch sizes, cursor encoding, advisory-lock key, and timeouts.
