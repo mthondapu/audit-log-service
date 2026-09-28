@@ -166,3 +166,95 @@ and the decisions above.
 
 **Sign-off:** I accepted I1, I3 and I5, accepted I9, I11 and I12 in principle, rejected I9a and deferred I9b by
 09:41 UTC, and approved I2, I4a–c, I6, I7, I7a, I8a–c, I10a and I10b on 2026-09-28 at 09:49 UTC.
+
+### 2026-09-28 — Focused Discussion 3: retention, redaction and export
+
+**Date/Time:** 2026-09-28, 10:15–11:31 UTC (from session timestamps: discussion requested at 10:15; first decision
+set given at 10:30; remaining API decisions requested at 10:34; N1–N15 dispositions given at 11:29; final decision
+set approved at 11:31).
+
+**Activity:** Retention, redaction and export design discussion (documentation only), followed by two reconciliation
+rounds and explicit developer approval.
+
+**What I asked:** I asked Claude to analyze retention/archival, structured redaction and bulk export on top of the
+approved integrity design, comparing options without deciding for me. I then asked Claude to reconcile my
+dispositions against Discussions 1 and 2, and to resolve the remaining API and design questions (N1–N15).
+
+**What the AI produced:**
+
+- An initial analysis comparing logical archive, physical deletion with a signed boundary, and a payload purge that
+  keeps the chain intact. Other findings:
+  - redacted values would need a per-value storage design;
+  - signed export manifests are needed, because recomputed hashes alone do not show a bundle is unaltered;
+  - pre-signing verification is needed, to avoid signing tampered data;
+  - public callers could forge retention or redaction authorization events through the append API.
+- A reconciliation of my first decision set. It withdrew Claude's earlier proposal to put the administrator's
+  identity in the redaction event's `actorId`, which conflicted with the approved `actorId`/`recordedBy`
+  distinction.
+- An API reconciliation (N1–N15) covering archived visibility, the redacted-value representation, redaction and
+  export status behavior, export scope, verification scope before signing, the manifest, the reason field, and the
+  relationship between export and checkpoints. It found that full-chain verification before signing is the only
+  option that protects the completeness claim.
+
+**What I decided:**
+
+- Approved:
+  - R1 (payload-purge retention), R2 (retention events), R5 (resumable purge);
+  - X1 (separate per-value storage), X3 (JSON Pointer addressing), X4 (separate redaction event), X5 (atomic
+    redaction);
+  - E1 (export scope), E2 (snapshot and `asOfSequence`), E4 (per-record evidence), E7 (no signing of unverified
+    data), E8 (standalone verifier);
+  - N1–N6, N8–N11, N13 and N14.
+- Approved in principle: E5 and N12 (signed manifest structure and signing concept).
+- Modified:
+  - R3: verification from genesis; `PAYLOAD_VALUE_MISSING` accepted in principle, with its authorization rule left
+    open.
+  - R4: archived visibility, reconciled with Discussion 1 before any API naming was accepted.
+  - R6: configurable window and batch size, with no role named.
+  - X2: commitment properties only, with no new canonicalization rule.
+  - X6: the missing-value principle only.
+  - X7: no meaningless repeat events, with the status reconciled later.
+  - X9: distinguish redacted values from `null`, with the representation reconciled later.
+  - E3: bounded, with no size number in the baseline.
+  - E6: signing in principle, with key questions left open.
+  - E9: status principles, with the mapping reconciled later.
+  - C1: the principle only, with no enforcement mechanism.
+- Deferred:
+  - X8 and E10: roles, separation of duties, export auditing, `GET` versus `POST`, client-data access rules.
+  - N7: whether system events can be redacted.
+  - N15: the retention trigger, to implementation planning.
+  - The export signature algorithm, key choice and key lifecycle, storage and distribution.
+  - The C1 enforcement mechanism, internal identity and system-event field mapping.
+
+**Rationale:**
+
+- The payload purge meets the retention requirement while keeping the events table strictly append-only and
+  verifiable from genesis, without depending on the deferred checkpoint lifecycle.
+- Recording retention and redaction as chain events makes authorized removals auditable without updating immutable
+  records.
+- Values are rendered as `null` inside the preserved structure, with `redactedPaths` and `archived`, which keeps
+  `payload` a JSON object and distinguishes redacted values from genuine `null` values.
+- Exports always include archived records, so the completeness claim covers the full selected history.
+- Full-chain verification before signing protects the completeness claim, at the accepted cost that a broken chain
+  blocks exports.
+- Security-dependent choices are deferred rather than fixed early. These include identity, roles, the protection of
+  system events, and keys.
+
+**Result:** `docs/requirements.md`:
+
+- §3 rows 9 and 11–13 revised;
+- FR-1 system-event principles added;
+- FR-2 archived visibility, cursor filter binding and record representation added;
+- FR-3 updated for verification from genesis and for `PAYLOAD_VALUE_MISSING` in principle, with its rule
+  unresolved;
+- FR-5 retention model, FR-6 redaction design and FR-7 export design added;
+- NFR-1 storage note updated;
+- out-of-scope items, risk rows and validation rows added;
+- §13 open items replaced with the remaining security, checkpoint/key and implementation items.
+
+**Validation:** No application code or tests were changed. Validation at this stage is my review of the design
+analysis and reconciliations before approval, and of the requirements diff for consistency with the assignment and
+with Discussions 1 and 2.
+
+**Sign-off:** I gave my first Discussion 3 dispositions at 10:30 UTC and the N1–N15 dispositions at 11:29 UTC, and
+approved the final reconciled Discussion 3 decision set on 2026-09-28 at 11:31 UTC.
