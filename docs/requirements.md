@@ -33,18 +33,18 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 | # | Requirement / Decision | Source | Rationale |
 |---|---|---|---|
 | 1 | The assignment's `timestamp` field shall be the optional, caller-supplied time at which the event occurred; if omitted, it is stored as null. The server always assigns the authoritative `recordedAt` recording time. | Assignment + Developer-derived | Keeps the assignment's field name while separating business occurrence time from authoritative recording time. |
-| 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. `recordedAt` shall be normalized to UTC. Timestamps shall be immutable once recorded. Whether the caller-supplied `timestamp` is stored normalized to UTC or with its original offset is deferred to the integrity design. | Developer-derived | Avoids ambiguous local times and provides consistent querying, retention, and integrity behavior. |
+| 2 | Timestamps shall be RFC 3339 date-times with an explicit timezone offset; values without an offset shall be rejected. Both `recordedAt` and the caller-supplied `timestamp` shall be normalized to UTC and represented at fixed microsecond precision; the caller's original offset is not retained. Timestamps with more than six fractional-second digits shall be rejected. Timestamps shall be immutable once recorded. | Developer-derived + Design decision | Avoids ambiguous local times and gives a single representation for storage, hashing, and responses. |
 | 3 | Audit events shall contain `eventType`, `actorId`, `resourceType`, `resourceId`, `payload`, optional caller-supplied `timestamp`, and the server-assigned fields `id` (UUID), `sequence` (integer chain position), `recordedAt`, and `recordedBy` (the authenticated technical caller). Callers shall not supply server-assigned fields. | Assignment + Developer-derived | Uses the assignment's event terminology, gives each record a stable identifier and an explicit chain position, and distinguishes the business actor (`actorId`) from the technical caller (`recordedBy`). |
-| 4 | `payload` shall contain structured JSON data. | Developer-derived | Supports structured querying, redaction, validation, and deterministic integrity processing. |
-| 5 | The audit history shall have a defined logical ordering, and concurrent appends shall preserve that ordering without conflicting chain histories. | Assignment + Developer-derived | Required for a reliable append-only integrity model. |
-| 6 | Each audit record shall contain its own content/integrity hash, a link to the preceding record, and a defined genesis value for the first record. | Assignment | Establishes the hash-chain structure and its starting point. |
-| 7 | Integrity protection shall cover the immutable audit-event content and the chain/order metadata necessary to detect modification, deletion, insertion, reordering, and unauthorized rewriting. | Assignment + Developer-derived | The integrity guarantee must extend beyond simple field edits. |
-| 8 | The integrity design shall address unauthorized tail truncation and complete historical rewriting. | Developer-derived | A basic hash chain alone may not detect these cases when an attacker can rewrite subsequent hashes. |
-| 9 | Retention processing shall not cause legitimate archived history to appear as unexplained integrity corruption. | Assignment + Developer-derived | Retention must coexist with meaningful verification. |
+| 4 | `payload` shall be a JSON object conforming to the I-JSON profile (RFC 7493) used for canonical hashing; the resulting input restrictions are listed in FR-1. | Assignment + Developer-derived + Design decision | Supports structured querying, redaction, validation, and deterministic integrity processing. |
+| 5 | The audit history shall have a defined logical ordering, and concurrent appends shall preserve that ordering without conflicting chain histories. `sequence` starts at 1, is contiguous, is never renumbered, and defines chain order (NFR-1). | Assignment + Developer-derived + Design decision | Required for a reliable append-only integrity model. |
+| 6 | Each audit record shall contain `contentHash` (a hash of its own content), `previousHash` (a link to the preceding record), and `recordHash` (a hash binding the record to its chain position). The first record's `previousHash` is the genesis value: 64 lowercase hexadecimal zeros. Definitions are in NFR-1. | Assignment + Design decision | Establishes the hash-chain structure and its starting point, and keeps content integrity separate from chain-position integrity. |
+| 7 | Integrity protection shall cover the immutable audit-event content and the chain/order metadata necessary to detect modification, deletion, insertion, reordering, and unauthorized rewriting. Exact hash coverage is defined in NFR-1. | Assignment + Developer-derived | The integrity guarantee must extend beyond simple field edits. |
+| 8 | The integrity design shall address unauthorized tail truncation and complete historical rewriting. The approved direction is Ed25519-signed checkpoints stored outside the database (FR-4). | Developer-derived + Design decision | A plain public hash chain cannot detect these cases when an attacker with database write access can recompute subsequent hashes. |
+| 9 | Retention processing shall not cause legitimate archived history to appear as unexplained integrity corruption. Retention shall preserve sufficient chain evidence for verification (FR-5). | Assignment + Developer-derived | Retention must coexist with meaningful verification. |
 | 10 | Sensitive values within event payloads shall be capable of being redacted after recording. | Assignment | Sensitive information may need removal after ingestion. |
-| 11 | Authorized redaction shall preserve audit-history verification and shall itself be auditable. | Assignment + Developer-derived | Privacy operations must not undermine the audit trail. |
+| 11 | Authorized redaction shall preserve audit-history verification, shall not rewrite the original record's integrity hashes, and shall itself be auditable. | Assignment + Developer-derived + Design decision | Privacy operations must not undermine the audit trail. |
 | 12 | Audit records shall be exportable as all records matching a specified `actorId` or `resourceId`. | Assignment | Supports auditor and regulator investigations while preserving complete matching scope. |
-| 13 | An exported audit bundle shall contain sufficient integrity evidence to be independently verified without trusting the live service. | Developer-derived | Provides evidence that can be validated outside the running service. |
+| 13 | An exported audit bundle shall contain sufficient integrity evidence for the integrity of its records to be independently verified without trusting the live service. Completeness of the export selection is an attested claim, not something the hashes alone can prove (FR-7). | Developer-derived + Design decision | Provides evidence that can be validated outside the running service without overstating what it proves. |
 | 14 | Duplicate-write idempotency is not required for the initial version. | Developer-derived | Keeps the initial implementation focused; duplicate events remain part of the audit history. |
 | 15 | Full-history verification is required for the initial version. More advanced checkpoint/range verification may be considered during design if justified. | Assignment + Developer-derived | Establishes a correctness-first baseline. |
 | 16 | A caller-supplied `timestamp` more than a configurable allowed skew (default 5 minutes) ahead of `recordedAt` shall be rejected. No lower bound is imposed. | Developer-derived | Catches clearly erroneous future times from writing services while accepting valid late-arriving historical events. |
@@ -57,7 +57,7 @@ The service shall provide an API to append a new audit event.
 
 A successful append shall return sufficient information for the caller to identify the recorded event and its integrity position. The response shall contain the full stored record, including `id` and `sequence`, and shall reference the record's location (`GET /audit/events/{id}`).
 
-The server shall assign `recordedBy` from the authenticated caller. The authentication mechanism and `recordedBy` format are deferred to the security design; whether `recordedBy` participates in the integrity hash is deferred to the integrity design.
+The server shall assign `recordedBy` from the authenticated caller. `recordedBy` shall be a stable, non-secret identifier of the calling service and is covered by `contentHash` (NFR-1). The authentication mechanism and exact `recordedBy` format are deferred to the security design.
 
 Append requests shall be validated and bounded:
 
@@ -65,10 +65,18 @@ Append requests shall be validated and bounded:
 - `actorId` and `resourceId` shall have bounded lengths;
 - `payload` shall be a JSON object with bounded size and nesting depth;
 - the overall request size shall be bounded;
-- duplicate JSON keys shall be rejected; and
+- duplicate JSON keys shall be rejected;
+- strings shall not contain unpaired Unicode surrogates;
+- numbers shall be finite, and integers shall be within ±(2^53−1); fractional and exponent notation are accepted and interpreted as IEEE-754 double values, as I-JSON specifies;
+- strings shall not contain U+0000;
+- timestamps shall not have more than six fractional-second digits; and
 - unknown fields, including attempts to supply server-assigned fields, shall be rejected with `422`.
 
+The surrogate, finite-number, and integer-range rules (with duplicate-key rejection) are required for deterministic canonical hashing. The U+0000 and microsecond-precision rules are required by PostgreSQL storage; rejecting rather than silently truncating timestamps is defensive validation. There are no numeric restrictions beyond the approved I-JSON/JCS profile and applicable storage constraints; fractional and exponent-form numbers are permitted.
+
 Exact limits and patterns are implementation constraints documented with the API definition rather than in this baseline.
+
+Concurrent appends shall be serialized so that the chain cannot fork (NFR-1).
 
 The normal API shall not provide an operation for arbitrary modification or deletion of an existing audit event.
 
@@ -102,7 +110,7 @@ Unknown query parameters shall be rejected with `422`, because silently ignoring
 
 The service shall also provide `GET /audit/events/{id}` to retrieve a single audit record by its identifier.
 
-Whether and how archived or redacted records appear in query results is deferred to the retention and redaction design. How `sequence` is assigned under concurrent appends is deferred to the concurrency design.
+Whether and how archived or redacted records appear in query results is deferred to the retention and redaction design. `sequence` assignment under concurrent appends is defined in NFR-1.
 
 ### FR-3 — Verify Audit History
 
@@ -112,12 +120,35 @@ The service shall provide:
 
 The verification endpoint shall require authentication and authorization.
 
-A verification request that executes successfully shall return `200`, with the verification result in the response body whether the chain is intact or broken. A detected integrity violation is a verification result, not an HTTP error. The exact response structure is deferred to the integrity design.
+A verification request that executes successfully shall return `200`, with the verification result in the response body whether the chain is intact or broken. A detected integrity violation is a verification result, not an HTTP error.
 
 The verification response shall provide:
 
 1. whether the audit chain is intact; and
 2. if the chain is not intact, the first detected inconsistency and its violation type.
+
+Verification behavior (design decision):
+
+- verification scans the complete chain in `sequence` order against a consistent database snapshot;
+- verification starts at `sequence` 1 using the genesis value, or at an authenticated retention boundary (mechanism deferred to Focused Discussion #3);
+- verification continues after the first violation, counting at most one violation per record, and reports the first violation and the total count; a complete list of violations is not returned in v1.
+
+The v1 verification response shall contain:
+
+| Field | Content |
+|---|---|
+| `intact` | `true` when `violationCount` is 0 |
+| `scheme` | Integrity scheme identifier (`audit-log/v1`) |
+| `verifiedAt` | Time of verification |
+| `recordsChecked` | Number of records checked |
+| `head` | `sequence` and `recordHash` of the verified chain head; `null` for an empty chain |
+| `anchor` | Checkpoint `status` and `sequence`; `NONE` when no checkpoint exists. Statuses specific to the checkpoint lifecycle are deferred with FR-4. |
+| `violationCount` | Number of records with a violation |
+| `firstViolation` | `type`, `sequence`, `recordId`, and a fixed message; `null` when intact |
+
+Core violation types: `GENESIS_MISMATCH`, `SEQUENCE_GAP`, `SEQUENCE_DUPLICATE`, `CONTENT_HASH_MISMATCH`, `PAYLOAD_VALUE_MISMATCH`, `RECORD_HASH_MISMATCH`, `PREVIOUS_HASH_MISMATCH`, `RECORDED_AT_REGRESSION`, `ANCHOR_MISMATCH`, and `CHAIN_TRUNCATED`. Violation types for missing payload values and retention boundaries are deferred to Focused Discussion #3.
+
+Violation messages shall be fixed per violation type and shall not be derived from record data. The response may expose sequence numbers, record identifiers, violation types, head information, and anchor information. It shall not expose payload values, payload keys, `actorId`, `resourceId`, or `recordedBy`.
 
 Verification shall detect, where applicable:
 
@@ -126,20 +157,24 @@ Verification shall detect, where applicable:
 - missing records;
 - unexpected insertion or reordering;
 - invalid integrity evidence;
-- unauthorized tail truncation; and
+- unauthorized tail truncation, relative to the latest checkpoint; and
 - unauthorized historical rewriting within the documented threat model.
 
 Legitimate archived and redacted records shall not be reported as integrity violations solely because they have undergone an authorized retention or redaction operation.
 
-Verification shall not expose sensitive payload values unnecessarily.
-
 ### FR-4 — Integrity Anchoring / Checkpoints
 
-The solution shall provide a mechanism that addresses detection of unauthorized rewriting of the complete historical chain.
+The solution shall provide a mechanism that addresses detection of unauthorized rewriting of the complete historical chain and of tail truncation.
 
-The exact checkpoint, signing, anchoring, key-management, and external-evidence mechanisms shall be finalized during architecture and cryptographic design.
+Approved direction (design decision): Ed25519-signed checkpoints of the chain head, stored outside the audit database. A plain public hash chain cannot provide this, because an attacker with database write access can recompute every subsequent hash or remove the newest records.
 
-The threat model shall explicitly identify the attacker capabilities this mechanism is intended to address.
+Threat model: the attacker may have write access to the audit database, but not to the checkpoint signing key or the checkpoint store. Within this model, rewriting or truncating records up to the latest checkpoint is detectable.
+
+Limitation: records appended after the latest checkpoint can be rewritten, fabricated, or truncated without detection by such an attacker. The size of this window depends on checkpoint timing.
+
+Per-record signatures are not used.
+
+Checkpoint lifecycle and timing, checkpoint format, storage mechanics, and key-management details remain deferred.
 
 ### FR-5 — Retention
 
@@ -154,7 +189,14 @@ Retention processing shall:
 - make retained/archived state distinguishable from active records; and
 - allow verification to remain meaningful after retention processing.
 
-The exact archive representation and datastore implementation shall be finalized during design.
+Integrity principles (design decision):
+
+- retention shall preserve sufficient chain evidence for verification to continue;
+- intentional archival or removal shall be distinguishable from unexplained tampering;
+- `sequence` is never renumbered, and genesis applies only to `sequence` 1; and
+- if the oldest records are removed, verification may begin from an authenticated retention boundary.
+
+The retention model, the boundary mechanism, the archive representation, and the datastore implementation are deferred to Focused Discussion #3.
 
 ### FR-6 — Redaction
 
@@ -171,7 +213,18 @@ Redaction is an authorized privacy operation and shall be distinguished from una
 
 The final engineering documentation shall describe the selected redaction approach, its trade-offs, and its limitations.
 
-The exact cryptographic commitment/redaction mechanism shall be finalized during the integrity and privacy design review.
+Integrity model (design decision):
+
+- each payload value has a salted commitment, and `contentHash` covers the payload structure with each value replaced by its commitment;
+- salts shall be generated by a cryptographically secure random generator and be at least 128 bits;
+- redaction deletes the value together with its salt and leaves the commitment in place;
+- the original `contentHash` is never rewritten, and remaining values stay independently verifiable against their commitments;
+- raw payload values shall not be stored in the immutable audit-record representation; and
+- redaction scope is the payload only; `actorId` and `resourceId` are not redaction targets.
+
+Known limitation: payload keys and structure (such as array lengths) remain visible after redaction.
+
+The redaction API, authorization, separation of duties, reason field, response representation, and storage tables are deferred to Focused Discussion #3.
 
 ### FR-7 — Export
 
@@ -184,7 +237,12 @@ An export shall include sufficient integrity information to establish that the i
 
 The exported bundle shall be independently verifiable without requiring the recipient to trust the live service.
 
-The exact export format, signing mechanism, provenance evidence, and completeness checks shall be finalized during design.
+The export shall distinguish between:
+
+- cryptographic integrity of the exported records, which a recipient can verify independently by recomputing their hashes and commitments; and
+- completeness of the export selection, which is an attested claim by the service and cannot be proven by the hashes alone.
+
+The export bundle format, provenance evidence, and completeness attestation mechanism are deferred to Focused Discussion #3.
 
 ### FR-8 — Regulatory Access Audit / Scenario C
 
@@ -204,7 +262,42 @@ Append-only and tamper-evident behavior shall not depend solely on application-l
 
 The final implementation shall include appropriate datastore-level protections against unauthorized modification or deletion.
 
-This is a developer-derived engineering control supporting the assignment's integrity objective.
+This is a developer-derived engineering control supporting the assignment's integrity objective. Database roles, privileges, and the privileged path for tampering demonstrations are deferred to the security design.
+
+#### Integrity design
+
+The following were approved in Focused Discussion #2. Each item is marked as an engineering convention or a design decision.
+
+**Hash structure and coverage (design decision):**
+
+- `contentHash` covers the event content: `id`, `eventType`, `actorId`, `resourceType`, `resourceId`, `timestamp` (an explicit null when absent), `recordedAt`, `recordedBy`, and the payload commitments (FR-6).
+- `recordHash` covers `sequence`, `previousHash`, and `contentHash`.
+- `previousHash` is the `recordHash` of the record at `sequence − 1`, or the genesis value for `sequence` 1.
+- Content integrity is kept separate from chain-position integrity. No hash covers itself or any state that can legitimately change after recording, such as archive or redaction status.
+
+**Canonicalization and hashing:**
+
+- Records are canonicalized with RFC 8785 (JSON Canonicalization Scheme) over I-JSON (RFC 7493) input. *(Engineering convention)*
+- A maintained RFC 8785 library shall be used, subject to an implementation adoption check covering maintenance status, license, and conformance with the RFC 8785 test vectors. If no maintained library can be adopted without violating the approved canonicalization requirements, including the FR-1 numeric profile, implementation shall stop for developer review and a new explicit decision. *(Design decision)*
+- The hash algorithm is SHA-256, represented as lowercase hexadecimal. *(Engineering convention)*
+- Every hash input begins with a distinct, versioned domain label under the `audit-log/v1` scheme, and the scheme identifier is reported in verification output. *(Design decision)*
+
+**Sequence and genesis (design decision):**
+
+- `sequence` starts at 1, is contiguous, is never renumbered, and defines chain order.
+- The genesis value is 64 lowercase hexadecimal zeros and applies only to `sequence` 1.
+- No chain identifier is used.
+
+**Append concurrency (design decision):**
+
+- Appends are serialized with a PostgreSQL transaction-scoped advisory lock at READ COMMITTED isolation. The chain head is read after the lock is acquired.
+- `recordedAt` is taken from the database clock after locking, and clamped so it never goes backwards.
+- A lock timeout bounds waiting. The server does not retry failed appends automatically.
+- `UNIQUE(sequence)` is required. `UNIQUE(previous_hash)` is defense in depth against a permanent fork.
+- There is no foreign key from `previous_hash` to `record_hash`, because retention can remove older records.
+- The exact lock key and timeout values are implementation details.
+
+**Storage separation (design decision):** raw payload values are stored outside the immutable audit-record representation so that redaction can remove them without modifying the immutable record. The exact tables are deferred to Focused Discussion #3.
 
 ### NFR-2 — Security
 
@@ -299,6 +392,7 @@ The API shall follow established HTTP/REST conventions. These are engineering co
 6. The initial implementation does not provide client-side idempotency keys for retry deduplication.
 7. The final implementation will document prototype limitations where behavior is intentionally narrower than a production deployment.
 8. Authenticated writing services are trusted to assert the business `actorId`; the server-assigned `recordedBy` records which technical caller submitted each event.
+9. For integrity anchoring, an attacker may have write access to the audit database but not to the checkpoint signing key or the checkpoint store. In the prototype, the checkpoint store stands in for an external witness.
 
 ## 7. Out of Scope
 
@@ -313,7 +407,8 @@ The following are outside the initial implementation scope:
 - client-side idempotency keys;
 - integration with a production identity provider;
 - production key-management infrastructure;
-- external regulatory timestamping infrastructure; and
+- external regulatory timestamping infrastructure;
+- per-record digital signatures (signed checkpoints are used instead); and
 - production-specific regulatory retention rules until the applicable regulation is identified.
 
 Design considerations for these areas may be documented where they materially affect the prototype architecture.
@@ -404,10 +499,15 @@ The implementation shall demonstrate the clarified interpretation of regulatory 
 | Risk | Potential Impact | Initial Mitigation / Follow-up |
 |---|---|---|
 | Ambiguous Scenario C access semantics | Incorrect regulatory audit behavior | Resolve through documented brainstorming, assumptions, and a clarified requirement statement |
-| Simple hash chains may not detect complete rewrites | False confidence in historical integrity | Perform explicit cryptographic/integrity design review |
-| Concurrent appends may create ordering or chain-integrity problems | Corrupted or inconsistent audit history | Define and test a serialized append strategy |
-| Retention may conflict with verification | Legitimate archival could appear as tampering | Design retention and verification together |
-| Redaction may conflict with immutability | Sensitive data removal could invalidate integrity | Define integrity-preserving redaction semantics before implementation |
+| Simple hash chains may not detect complete rewrites | False confidence in historical integrity | Ed25519-signed checkpoints stored outside the database (FR-4) |
+| Records appended after the latest checkpoint can be rewritten, fabricated, or truncated by an attacker with database write access | Undetected tampering within the unanchored window | Document the limitation; checkpoint timing (deferred) determines the window size |
+| Checkpoint signing key compromise | Forged checkpoints undermine rewrite and truncation detection | Keep the key out of the database and source control; key-management details deferred |
+| Concurrent appends may create ordering or chain-integrity problems | Corrupted or inconsistent audit history | Advisory-lock serialized appends with `UNIQUE(sequence)` and `UNIQUE(previous_hash)` (NFR-1), plus concurrency tests |
+| Canonicalization differs between the service and an independent verifier | False tamper reports, or exports that cannot be verified | RFC 8785 over I-JSON input, FR-1 input restrictions, RFC test vectors, and storage round-trip tests |
+| No maintained RFC 8785 library passes the adoption check | Canonicalization cannot be implemented as approved | Stop implementation for developer review and a new explicit decision |
+| Retention may conflict with verification | Legitimate archival could appear as tampering | Design retention and verification together; verification may start from an authenticated boundary |
+| Redaction may conflict with immutability | Sensitive data removal could invalidate integrity | Salted per-value commitments keep `contentHash` stable (FR-6) |
+| Payload keys and structure remain visible after redaction | Limited metadata disclosure | Document as a known limitation |
 | Export may omit necessary integrity evidence | Recipients cannot independently verify evidence | Define export provenance, completeness, and verification rules |
 | Privileged database access may bypass application controls | Unauthorized modification of audit records | Enforce least privilege and test direct datastore tampering |
 | Prototype security assumptions may differ from production | Production deployment may require additional controls | Explicitly document authentication, key management, scaling, and deployment limitations |
@@ -436,12 +536,14 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 |---|---|
 | Append-only audit history | Successful append tests and direct datastore tampering demonstration |
 | Query | API tests covering combined filters, half-open time ranges, cursor pagination, page-size bounds, ascending sequence order, and rejection of unknown parameters |
-| API contract | API tests covering input validation, unknown-field rejection, Problem Details error format, absence of echoed input values, and status codes |
-| Hash-chain integrity | Unit/integration/property tests and verification scenarios |
-| Concurrent writes | Concurrency tests demonstrating a consistent chain |
-| Rewrite/tamper detection | Controlled datastore modification and verification demonstration |
+| API contract | API tests covering input validation (including the FR-1 canonicalization and storage restrictions), unknown-field rejection, Problem Details error format, absence of echoed input values, and status codes |
+| Canonicalization | RFC 8785 test vectors, deterministic output tests, and property tests showing hashes survive the datastore round trip |
+| Hash-chain integrity | Unit/integration/property tests showing that each covered field affects the correct hash, plus genesis and chain-link verification scenarios |
+| Concurrent writes | Concurrency tests showing that parallel appends produce contiguous sequences and an intact chain, and that the database constraints reject a forced fork |
+| Rewrite/tamper detection | Controlled datastore modification and verification demonstration covering modification, middle deletion, insertion, reordering, tail truncation, and full rewrite (the last two against a signed checkpoint) |
+| Verification | Tests of the v1 response fields, violation types, `violationCount`, empty-chain behavior, and absence of payload values, payload keys, `actorId`, `resourceId`, and `recordedBy` |
 | Retention | Retention execution plus post-retention verification |
-| Redaction | Redaction execution plus integrity and auditability verification |
+| Redaction | Redaction execution plus integrity and auditability verification, showing that `contentHash` is unchanged, remaining values verify against their commitments, and the redacted value and salt are removed |
 | Export | Export generation plus standalone verification |
 | Scenario C | Clarified interpretation, documented scope, implementation evidence, and explicit scope-outs |
 | Security | Authorization/privilege tests and security review |
@@ -453,8 +555,15 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 
 This document represents the **developer-authored draft requirements baseline** established before substantive AI-assisted design and implementation.
 
-The `Source` classifications distinguish assignment-required behavior from developer-derived engineering requirements.
+The `Source` classifications distinguish assignment-required behavior (`Assignment`), developer-derived engineering requirements (`Developer-derived`), and technical design decisions approved in focused engineering discussions (`Design decision`). Established engineering conventions are identified where they are used (NFR-1, NFR-7).
 
 Requirements requiring technical design decisions are intentionally not finalized here. Those decisions will be evaluated through focused engineering analysis, with the developer retaining final responsibility for acceptance or rejection.
+
+Event model and API contract decisions (Focused Discussion #1) and integrity decisions (Focused Discussion #2) have been incorporated. The following remain open:
+
+- Focused Discussion #3: retention model and boundary mechanism; redaction API, authorization, separation of duties, reason field, response representation, and storage tables; export bundle format and completeness attestation; visibility of archived and redacted records; and export pairing of `resourceType` and `resourceId`.
+- Security design: authentication mechanism, `recordedBy` format, database roles and privileges, and the privileged path for tampering demonstrations.
+- Checkpoint design: lifecycle and timing, format, storage mechanics, and key management.
+- Implementation: selection of the canonicalization library, subject to the adoption check.
 
 Scenario C remains intentionally open until its business meaning and implementation boundary are clarified through the documented requirements-brainstorming process.
