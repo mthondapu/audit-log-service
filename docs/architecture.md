@@ -51,9 +51,9 @@ Diagram: [diagrams/component-architecture.drawio](diagrams/component-architectur
 |---|---|---|
 | **API layer** | HTTP routing, status codes, `Location` headers, OpenAPI documentation | security, request validation, services |
 | **Security** | Resolve the Bearer API key to a principal; enforce the route's capability before any resource lookup | configuration |
-| **Request validation** | Strict JSON parsing (duplicate keys, I-JSON rules, U+0000, integer range, finite numbers, request size); Discussion #1 schemas; reserved system-event namespace; configuration-driven `CLIENT_ACCOUNT` validation for public writes | configuration |
-| **Integrity library** | RFC 8785 canonicalization, domain labels, salts and per-value commitments, `contentHash` and `recordHash`, genesis, chain-verification algorithm, missing-value authorization, manifest construction and checks | adopted RFC 8785 library, `hashlib` |
-| **Signing** | Load Ed25519 keys, sign checkpoints and manifests, compute `keyId`, verify signatures | `cryptography` (subject to the dependency gate) |
+| **Request validation** | Strict JSON parsing (duplicate keys, I-JSON rules, U+0000, the ±(2^53−1) numeric domain, finite numbers, request size); Discussion #1 schemas; reserved system-event namespace; configuration-driven `CLIENT_ACCOUNT` validation for public writes | configuration |
+| **Integrity library** | RFC 8785 canonicalization, domain labels, salts and per-value commitments, `contentHash` and `recordHash`, genesis, chain-verification algorithm, missing-value authorization, manifest construction and checks | `rfc8785` (RFC 8785 library), `hashlib` |
+| **Signing** | Load Ed25519 keys, sign checkpoints and manifests, compute `keyId`, verify signatures | `cryptography` |
 | **Append service** | The only writer of chain records; serialized append; reusable inside an existing transaction by the redaction, retention, and export services | integrity library, persistence |
 | **Query service** | Filters, cursor binding, archived boundary, payload reassembly (`null` values, `redactedPaths`, `archived`) | persistence |
 | **Verification service** | Consistent-snapshot streaming verification, checkpoint checks, missing-value authorization | integrity library, persistence, checkpoint store adapter |
@@ -127,6 +127,8 @@ Diagram: [diagrams/audit-append-integrity-sequence.drawio](diagrams/audit-append
 9. Return `201 Created` with `Location`.
 
 Database constraints (`UNIQUE(sequence)`, `UNIQUE(previous_hash)`, `UNIQUE(id)`) reject any fork even if application logic were wrong. `recordedAt` clamping prevents the application from writing a regression; verification still reports `RECORDED_AT_REGRESSION` for regressions introduced outside the application.
+
+**Canonicalization and numeric domain.** Hash and signature inputs are canonicalized with the `rfc8785` library (ADR-0002), which serializes numbers as RFC 8785 requires. The service separately bounds every accepted JSON number to ±(2^53−1) by numeric value, whatever its notation (requirements FR-1). This bound is an application-level rule, not part of RFC 8785. RFC 8785 writes some whole-number doubles between 2^53 and 10^21 as plain integer digits, which would read back as integers outside the service's integer domain. With the bound in place, every accepted value canonicalizes to text that parses back under the same rules and canonicalizes to the same bytes, so stored canonical text and exports need no special verifier handling of RFC 8785's 10^21 formatting boundary.
 
 ## 9. Payload commitment and redaction model
 
@@ -294,7 +296,6 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Reserved namespace prefix and access-event vocabulary names.
 - Exact environment-variable names and configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
 - Table and column names, exact database grants, limits, batch sizes, cursor encoding, advisory-lock key, and timeouts.
-- Dependency gates: RFC 8785 library adoption and `cryptography` approval, with outcomes recorded before the integrity and signing code is implemented.
 
 ## 22. Architecture decision references
 

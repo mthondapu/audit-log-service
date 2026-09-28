@@ -971,3 +971,111 @@ vulnerabilities; `git diff --check` reported no whitespace errors. No dependenci
 
 **Sign-off:** I answered the four clarifying questions and requested the review fixes above. My review and sign-off
 of the Phase 1 implementation are pending.
+
+### 2026-09-28 — Phase 2: RFC 8785 and Ed25519 dependency gates
+
+**Date/Time:** 2026-09-28, from 15:49 UTC (from session timestamps: Phase 2 requested at 15:49; my numeric-domain
+decision given at 15:58).
+
+**Activity:** Developer-led, AI-assisted dependency gates for canonicalization and signing. No integrity, signing,
+database, or API functionality.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** evaluate and adopt an established RFC 8785 (JCS) library and the `cryptography` package for
+Ed25519, prove each against the approved requirements with focused tests, and stop on any incompatibility with the
+approved requirements rather than work around it.
+
+**What the AI did:**
+
+- **RFC 8785 library evaluation.**
+  - Candidates:
+    - `rfc8785` (Trail of Bits);
+    - `jcs`, whose last release was in 2022;
+    - `canonicaljson`, which implements Matrix canonical JSON, not RFC 8785.
+  - `rfc8785` was the only candidate to pass the adoption check. It is Apache-2.0, and its repository is active and
+    not archived.
+  - It matches the RFC's published examples:
+    - the Section 3.2.4 sample bytes;
+    - the Section 3.2.3 property-sorting sample;
+    - every finite number sample in Appendix B.
+  - It rejects NaN and infinities, integers outside ±(2^53−1), unpaired surrogates, and non-JSON types.
+- **Conflict found.** A Hypothesis round-trip property test failed on `9007199254740992.0`. RFC 8785 writes
+  whole-number doubles between 2^53 and 10^21 as plain integer digits. FR-1 then accepted such values in fraction or
+  exponent notation, but their canonical text reads back as an integer outside the ±(2^53−1) integer domain. The
+  library's output is correct RFC 8785, so changing library would not help. Claude stopped, did not narrow the test,
+  and presented three options:
+  1. bound every number to ±(2^53−1) by numeric value, whatever its notation;
+  2. reject only whole numbers from 2^53 up to 10^21;
+  3. keep FR-1 unchanged and require every verifier to parse numbers as doubles or never re-parse canonical text.
+- **Ed25519 evaluation** with `cryptography` 50.0.1:
+  - key generation, and deterministic 64-byte signatures;
+  - rejection of a modified message, a modified, truncated, or extended signature, and another key's signature;
+  - raw and PEM public-key round trips;
+  - in-memory PKCS#8 private-key loading;
+  - the RFC 8032 TEST 2 vector, verified using only its public key, message, and signature;
+  - signing RFC 8785 canonical bytes.
+
+  All test keys are ephemeral and generated in memory.
+
+**My decision:** I approved option 1 (at 15:58 UTC). Every accepted JSON number, whether written as an integer, a
+fraction, or in exponent notation, must have a numeric value within ±(2^53−1); values outside the range, such as
+`9007199254740992`, `9007199254740992.0`, `1e16`, `1e21`, or `1e300`, are rejected. There is no exception for RFC
+8785's 10^21 formatting boundary. This is an application-level restriction of the service, not a requirement of RFC
+8785. I also instructed that `rfc8785>=0.1.4,<0.2` and `cryptography>=50.0.1` be kept.
+
+**Dependencies adopted:** `rfc8785>=0.1.4,<0.2` and `cryptography>=50.0.1`, which bring in `cffi` and `pycparser`
+through `uv.lock`. No other dependencies were added.
+
+**Tests (90 new, 205 in total):**
+
+- `tests/unit/dependency_gates/test_rfc8785_gate.py` (75 tests):
+  - the RFC samples;
+  - key ordering and nested structures;
+  - booleans versus integers;
+  - integer bounds, non-finite numbers, surrogates, and non-JSON types;
+  - boundary tests for the numeric domain in integer, fraction, and exponent notation. Before sign-off I asked for
+    two explicit cases showing that the check applies to the IEEE-754 double value: `9007199254740991.4` is
+    accepted (it rounds to 2^53−1) and `9007199254740991.5` is rejected (it rounds to 2^53). A matching sentence was
+    added to FR-1;
+  - a property test that every accepted value survives canonicalization, parsing under the FR-1 number rules, and
+    canonicalization again with identical bytes;
+  - a property test that the canonical text of any out-of-domain number is rejected.
+
+  The FR-1 number parse used by these tests is a reference helper in the test file. The service's request validator
+  belongs to the API phase.
+- `tests/unit/dependency_gates/test_ed25519_gate.py` (15 tests): the Ed25519 checks above.
+
+**Documentation updates:**
+
+- `requirements.md`: the FR-1 numeric-domain rule and its rationale; the canonicalization and signing notes; the
+  resolved gate items removed from §13.
+- `architecture.md`: the component table; a canonicalization and numeric-domain note in §8; the resolved gate item
+  removed from §21.
+- ADR-0002: the numeric-domain decision and the library adoption outcome.
+- ADR-0006 and ADR-0007: the signing dependency outcome, with its deferred-list item removed.
+
+**Limitations and deferred items:**
+
+- An unpaired surrogate in an object key raises `UnicodeEncodeError` rather than the library's
+  `CanonicalizationError`. Both are `ValueError`, and FR-1 validation rejects surrogates first.
+- Still deferred:
+  - domain-label strings, hash encodings, and the commitment encoding;
+  - checkpoint and manifest schemas;
+  - the public-key serialization format for artifacts;
+  - signing-key storage and lifecycle.
+
+**Validation (performed by Claude, results as observed):**
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 205 passed, with 100% statement and branch coverage.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I approved option 1 for the numeric domain as recorded above. My review and sign-off of the Phase 2
+implementation are pending.

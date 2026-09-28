@@ -1,6 +1,6 @@
 # ADR-0007: Signed exports
 
-- **Status:** Accepted (manifest schema and retention-evidence representation deferred; Ed25519 approved in principle, subject to the `cryptography` dependency gate)
+- **Status:** Accepted (manifest schema and retention-evidence representation deferred; Ed25519 approved in principle; the `cryptography` dependency gate passed, see ADR-0006)
 - **Date:** 2026-09-28
 - **Decision owner:** Developer (Focused Discussions #3 and #4, decisions E1–E10, N8–N14, S18–S22, S24; AD-7, RB-3, L-D1)
 
@@ -38,7 +38,6 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
 - Exact manifest schema and retention-evidence field structure, constrained to remain inside the signed manifest.
 - Export audit event payload fields.
 - Separate or shared checkpoint and export keys (S23); production key lifecycle, storage, and distribution.
-- Recording the `cryptography` dependency-gate outcome (AD-12).
 
 ## Alternatives considered
 

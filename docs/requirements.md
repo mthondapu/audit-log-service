@@ -69,7 +69,7 @@ Append requests shall be validated and bounded:
 - the overall request size shall be bounded;
 - duplicate JSON keys shall be rejected;
 - strings shall not contain unpaired Unicode surrogates;
-- numbers shall be finite, and integers shall be within ±(2^53−1); fractional and exponent notation are accepted and interpreted as IEEE-754 double values, as I-JSON specifies;
+- every number shall be finite, and its numeric value shall be within ±(2^53−1) whether it is written as an integer, a fraction, or in exponent notation. Integers are taken exactly; fractional and exponent-form numbers are interpreted as IEEE-754 double values, as I-JSON specifies, and the range applies to that value. Numbers outside the range are rejected whatever their notation (for example `9007199254740992`, `9007199254740992.0`, `1e16`, `1e21`, `1e300`);
 - strings shall not contain U+0000;
 - timestamps shall not have more than six fractional-second digits;
 - event types in the reserved system-event namespace shall be rejected with `422`; and
@@ -77,7 +77,7 @@ Append requests shall be validated and bounded:
 
 Events submitted with `resourceType` `CLIENT_ACCOUNT` are also subject to the configuration-driven Scenario C validation in FR-8.
 
-The surrogate, finite-number, and integer-range rules (with duplicate-key rejection) are required for deterministic canonical hashing. The U+0000 and microsecond-precision rules are required by PostgreSQL storage; rejecting rather than silently truncating timestamps is defensive validation. There are no numeric restrictions beyond the approved I-JSON/JCS profile and applicable storage constraints; fractional and exponent-form numbers are permitted.
+The surrogate, finite-number, and numeric-domain rules (with duplicate-key rejection) are required for deterministic canonical hashing. The U+0000 and microsecond-precision rules are required by PostgreSQL storage; rejecting rather than silently truncating timestamps is defensive validation. The numeric domain is an application-level restriction of this service, not a requirement of RFC 8785. RFC 8785 writes some whole-number doubles between 2^53 and 10^21 as plain integer digits (for example, `1e16` becomes `10000000000000000`), and that text would read back as an integer outside the ±(2^53−1) integer domain. Bounding every number to the same range keeps canonical text within the accepted input when it is parsed and canonicalized again, so verifiers need no special handling of RFC 8785's 10^21 formatting boundary. The range check is applied to the IEEE-754 double value, not to the exact decimal text: `9007199254740991.4` is accepted because it rounds to 2^53−1, and `9007199254740991.5` is rejected because it rounds to 2^53. Fractional and exponent-form numbers within the range remain permitted; there are no other numeric restrictions beyond the I-JSON/JCS profile and applicable storage constraints.
 
 Exact limits and patterns are implementation constraints documented with the API definition rather than in this baseline.
 
@@ -385,7 +385,7 @@ Export security (Focused Discussion #4):
 - **Export audit event.** Creating an export is treated as an auditable, security-sensitive operation. After the bundle is built and signed, an export audit event in the reserved system-event namespace is appended before the bundle is returned. If the event cannot be appended, no bundle is returned and the response is `503`. The event's payload uses a fixed, server-defined schema. *(Approved in principle; a developer security decision, not an assignment requirement)*
 - **Identifying fields.** The export audit event inherits its identifying fields from the export scope. An `{actorId}` export sets `actorId` to the exported actor; a `{resourceId, resourceType}` export sets `resourceType` and `resourceId` to the exported resource. Fields not supplied by the scope use fixed, server-defined values. The event does not change the export snapshot: it is appended after `asOfSequence`. *(Design decision)*
 - **Method.** Export uses `POST /audit/exports`, because creating an export has this audit side effect. *(Design decision)*
-- **Signing.** Export manifests are signed with Ed25519. The required `cryptography` dependency shall be validated and explicitly approved during implementation planning. *(Approved in principle)*
+- **Signing.** Export manifests are signed with Ed25519. The required `cryptography` dependency shall be validated and explicitly approved during implementation planning. *(Approved in principle)* The Phase 2 dependency gate validated its Ed25519 support; the outcome is recorded in ADR-0006.
 - **Key identifier.** `keyId` is the SHA-256 fingerprint of the raw public key. The design supports key rotation, verification of historical signatures, and a trust anchor obtained out of band rather than from the live service. *(Approved in principle)*
 
 Deferred: whether exports and checkpoints use separate signing keys, and the production key lifecycle, storage, and distribution.
@@ -461,8 +461,8 @@ The following were approved in Focused Discussion #2. Each item is marked as an 
 
 **Canonicalization and hashing:**
 
-- Records are canonicalized with RFC 8785 (JSON Canonicalization Scheme) over I-JSON (RFC 7493) input. *(Engineering convention)*
-- A maintained RFC 8785 library shall be used, subject to an implementation adoption check covering maintenance status, license, and conformance with the RFC 8785 test vectors. If no maintained library can be adopted without violating the approved canonicalization requirements, including the FR-1 numeric profile, implementation shall stop for developer review and a new explicit decision. *(Design decision)*
+- Records are canonicalized with RFC 8785 (JSON Canonicalization Scheme) over I-JSON (RFC 7493) input, restricted to the FR-1 numeric domain. *(Engineering convention)*
+- A maintained RFC 8785 library shall be used, subject to an implementation adoption check covering maintenance status, license, and conformance with the RFC 8785 test vectors. If no maintained library can be adopted without violating the approved canonicalization requirements, including the FR-1 numeric profile, implementation shall stop for developer review and a new explicit decision. *(Design decision)* The Phase 2 dependency gate adopted the `rfc8785` library; the outcome, and the numeric-domain decision it led to, are recorded in ADR-0002.
 - The hash algorithm is SHA-256, represented as lowercase hexadecimal. *(Engineering convention)*
 - Every hash input begins with a distinct, versioned domain label under the `audit-log/v1` scheme, and the scheme identifier is reported in verification output. *(Design decision)*
 
@@ -822,8 +822,6 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
   - whether checkpoint and export signing keys are separate;
   - the production key lifecycle, storage, and distribution.
 - **Implementation planning:**
-  - selection of the canonicalization library, subject to the adoption check;
-  - validation and approval of the `cryptography` dependency;
   - how retention events identify their resource, and the retention response schema;
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the exact commitment encoding;

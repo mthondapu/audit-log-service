@@ -59,7 +59,22 @@ Exports do not gain intervening chain-link evidence, and no request parameter se
 - Checkpoint artifact format and store location.
 - Lifecycle and timing.
 - Whether checkpoint and export signing keys are separate (S23), and production key lifecycle, storage, and distribution.
-- Recording the `cryptography` dependency-gate outcome (AD-12).
+
+## Signing dependency outcome
+
+Recorded 2026-09-28 (Phase 2 dependency gate). This outcome also applies to export signing (ADR-0007).
+
+- **Library:** [`cryptography`](https://pypi.org/project/cryptography/), version constraint `>=50.0.1`, license Apache-2.0 OR BSD-3-Clause. It brings in `cffi` and `pycparser`. No upper bound is set, so that security releases are not blocked; its Ed25519 API is long-standing.
+- **Verified with Python 3.13:**
+  - Ed25519 key generation, signing (64-byte, deterministic signatures), and verification;
+  - rejection of a modified message, a modified, truncated, or extended signature, and a signature from another key;
+  - raw 32-byte and PEM (SubjectPublicKeyInfo) public-key round trips, and rejection of a public key of the wrong length. The raw form is the input to the approved `keyId` fingerprint;
+  - loading a private key from an in-memory PKCS#8 encoding;
+  - verification of the RFC 8032 Section 7.1 TEST 2 vector, using only its public key, message, and signature;
+  - signing RFC 8785 canonical bytes, with the signature kept outside the signed content.
+- All test keys are generated in memory; no key material is stored or committed.
+- The checkpoint artifact format, key storage and lifecycle, and whether checkpoint and export keys are separate remain deferred.
+- **Tests:** `tests/unit/dependency_gates/test_ed25519_gate.py`.
 
 ## Alternatives considered
 
