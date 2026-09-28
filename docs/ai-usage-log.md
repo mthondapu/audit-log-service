@@ -525,3 +525,275 @@ code.
 
 **Sign-off:** I gave the follow-up decisions on 2026-09-28 at 13:08 UTC and approved each later step as requested
 above. My final review of the combined documentation diff before committing is pending.
+
+### 2026-09-28 — Implementation readiness and offline checkpoint anchoring (L-D1)
+
+**Date/Time:** 2026-09-28, 14:06–14:20 UTC (from session timestamps: implementation-readiness analysis requested at
+14:06; L-D1 analysis requested at 14:11; Approach B approved and documentation update requested at 14:20).
+
+**Activity:** Developer-led, AI-assisted read-only implementation-readiness analysis, analysis of one open design
+gap (L-D1), and documentation of the developer's decision. No application code.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to assess implementation readiness without changing anything, then to analyze
+L-D1 neutrally, without ranking or recommending an approach. After deciding, I asked Claude to record my decision
+in the affected documentation.
+
+**What the AI produced:**
+
+- An implementation-readiness report: overall status "ready with gates" (the RFC 8785 library and `cryptography`
+  gates), a proposed phase sequence, and a first slice (scaffolding plus strict input validation). It identified
+  open items L-D1 to L-D4. L-D1 is the gap in how the offline verifier uses a supplied checkpoint whose sequence is
+  neither `asOfSequence` nor an included record's sequence.
+- A neutral comparison of two approaches for L-D1:
+  - A: hash-only chain-link evidence in exports;
+  - B: use a checkpoint only when it can be directly anchored to signed export evidence.
+
+  It covered evidence, verification, scope, size, completeness, signature interaction, required document changes,
+  and security or privacy. It also noted that a checkpoint created after an export cannot match that export's
+  `asOfSequence`, because the export audit event is appended above it.
+- Documentation updates recording the decision:
+  - `docs/requirements.md` (FR-7 verifier behavior, §12 Export row);
+  - `docs/architecture.md` (§12 artifacts, §13 offline verifier);
+  - ADR-0006 (a new L-D1 subsection with rationale and consequences);
+  - ADR-0007 (verifier behavior, no bridging evidence, alternative not adopted);
+  - `docs/diagrams/export-independent-verification.drawio`: checkpoint path showing signature verification, an
+    "anchorable?" decision, comparison, and a "not applicable / insufficient evidence" outcome.
+
+**What I decided:**
+
+- I approved Approach B. The offline verifier verifies a supplied checkpoint's signature and uses it only when it
+  can be directly anchored: at `asOfSequence` against the signed `asOfRecordHash`, or at an included record's
+  sequence against that record's signed and recomputed `recordHash`.
+- Otherwise it reports "not applicable / insufficient evidence", which is not a chain-integrity failure, and all
+  other export checks continue.
+- No intervening chain-link evidence is added to exports, and no request parameter selects a checkpoint or range.
+- The export scope model, the service-side verification before signing, and the signed manifest's role as the
+  authoritative signed export evidence are unchanged.
+
+**Rationale:** Approach B keeps export scope and size unchanged, discloses nothing about out-of-scope records, and
+relies only on evidence the signed manifest already provides.
+
+**Result:** Updated:
+
+- `docs/requirements.md`
+- `docs/architecture.md`
+- `docs/adr/0006-checkpoint-trust-anchor.md`
+- `docs/adr/0007-signed-exports.md`
+- `docs/diagrams/export-independent-verification.drawio`
+- this log
+
+No application code exists or was changed.
+
+**Validation:**
+
+- **Automated checks (by Claude):** the modified diagram parses as well-formed XML with no duplicate cell IDs or
+  dangling references; documentation links resolve; `git diff --check` reports no whitespace errors.
+- **Pending:** visual inspection of the updated diagram and review of the diff by me.
+- **Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I approved Approach B for L-D1 on 2026-09-28 at 14:20 UTC. My review of the resulting documentation
+changes is pending.
+
+### 2026-09-28 — API path design (L-D2)
+
+**Date/Time:** 2026-09-28, 14:27–14:31 UTC (from session timestamps: L-D2 analysis requested at 14:27; decisions
+given at 14:31).
+
+**Activity:** Developer-led, AI-assisted analysis of the API paths for consistency with the approved requirements,
+followed by documentation of the developer's decisions. No application code.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to analyze each approved API path (resource, method semantics, purpose, how far
+it is decided, and remaining ambiguity) without changing anything, then to record my decisions.
+
+**What the AI produced:**
+
+- An analysis finding the paths consistent and free of naming conflicts. It identified two items:
+  - `requirements.md` still described the redaction and retention paths as open;
+  - a retention-run `201 Created` had no defined `Location`. Under RFC 9110 the created resource would then
+    default to `/audit/retention-runs`, which is not a resource.
+- Documentation updates recording the decisions:
+  - `docs/requirements.md`: FR-5 endpoint and `201` `Location`; the FR-6 path; the FR-7 path; the §12 Retention
+    row; removal of the §13 path item;
+  - `docs/architecture.md`: §5 paths marked final; §10 `201` `Location`;
+  - `docs/adr/0005-retention-and-archived-boundary.md`: the `201` `Location`;
+  - `docs/diagrams/retention-redaction.drawio`: the `201` label.
+
+**What I decided:**
+
+- L-D2a: `POST /audit/events/{id}/redactions`, `POST /audit/exports` and `POST /audit/retention-runs` are final
+  paths.
+- L-D2b (Option 1): a retention-run `201 Created` includes `Location: /audit/events/{retentionEventId}`, because
+  the retention system event is the persisted resource the operation creates. There is no retention-run resource or
+  table, and no GET endpoint for runs.
+- Unchanged:
+  - the approved retention statuses (`201`, `200`, `422`, `503`);
+  - redaction's `201` with `Location`;
+  - `GET /audit/verify`.
+
+  The retention response schema and the export bundle and manifest schema remain deferred. No endpoints, query
+  parameters, versioning or trailing-slash changes were added.
+
+**Rationale:** Option 1 mirrors the approved redaction behavior and gives the `201` a real, readable resource.
+
+**Result:** the five files listed above and this log were updated. No application code exists or was changed.
+
+**Validation:**
+
+- **Automated checks (by Claude):** the modified diagram parses as well-formed XML with no duplicate cell IDs or
+  dangling references; `git diff --check` reports no whitespace errors; no wording describing these paths as open
+  remains.
+- **Pending:** visual inspection of the updated diagram and review of the diff by me.
+- **Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I approved L-D2a and L-D2b on 2026-09-28 at 14:31 UTC. My review of the resulting documentation
+changes is pending.
+
+### 2026-09-28 — API-key configuration and application settings (D3)
+
+**Date/Time:** 2026-09-28, 14:39–14:42 UTC (from session timestamps: D3 analysis requested at 14:39; decisions
+given at 14:42).
+
+**Activity:** Developer-led, AI-assisted analysis of the concrete design for API-key configuration and application
+settings, followed by documentation of the developer's decisions. No application code.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to analyze the configuration source, API-key representation, secret handling, the
+settings library, startup validation, runtime reload, testing, and security implications without changing
+anything, separating what was already decided from what D3 needed to decide. I then asked Claude to record my
+decisions.
+
+**What the AI produced:**
+
+- An analysis comparing TOML, JSON, and YAML, and three ways of supplying settings. It found:
+  - plain Pydantic v2 is sufficient, and `pydantic-settings` and `PyYAML` are outside the approved stack;
+  - unsalted SHA-256 key hashing is only adequate for high-entropy, machine-generated keys;
+  - a committed example file should use placeholders that fail validation.
+- Documentation updates recording the decisions:
+  - ADR-0008: a new D3 subsection, plus consequences and alternatives;
+  - `docs/architecture.md`: the §4 Configuration row, the §6 Configuration bullet, and §21 deferred details;
+  - `docs/requirements.md`: NFR-2 authentication, a new API-key configuration block, and the §13 open items.
+
+**What I decided:**
+
+- D3a: TOML via the standard library's `tomllib`; no YAML or other parser dependency.
+- D3b: environment variables for scalar and secret settings and for the paths to structured configuration; separate
+  mounted TOML files for the API-key configuration and for the Scenario C vocabulary and required keys.
+- D3c: plain Pydantic v2 validation; no `pydantic-settings` or other settings dependency.
+- D3d:
+  - each principal has exactly one approved prototype role, with no arbitrary capability lists; the approved
+    role-to-capability mapping stays authoritative;
+  - one or more lowercase hexadecimal SHA-256 key hashes per principal;
+  - raw keys machine-generated with at least 128 bits of entropy (applying to the raw key, not the digest), and
+    never persisted in PostgreSQL, Git, or logs;
+  - constant-time comparison.
+- D3e: the service and CLI fail fast on the listed configuration errors, without echoing raw keys or hash values.
+- D3f: load once at startup; restart to apply changes; no hot reload.
+- D3g: deterministic fake keys with hashes computed in fixtures; tests that raw keys and Authorization headers are
+  not logged; an example configuration with intentionally invalid placeholders; real and demo credentials in
+  gitignored locations.
+- Kept deferred: exact environment-variable names and paths, how the CLI is presented with the operator's
+  credential, the principal-ID pattern, the Scenario C vocabulary names, `.gitignore` details, and the demo-key
+  generation mechanism.
+
+**Rationale:** use the approved stack without new dependencies, keep the approved role model authoritative, fail
+safely on bad configuration, and keep secrets out of the repository, the database, and logs.
+
+**Result:** Updated:
+
+- `docs/adr/0008-authentication-and-authorization.md`
+- `docs/architecture.md`
+- `docs/requirements.md`
+- this log
+
+No application code, configuration files, or `.gitignore` rules exist or were created.
+
+**Validation:**
+
+- **Automated checks (by Claude):** `git diff --check` reports no whitespace errors; relative links resolve; no
+  stale "configuration layout" wording remains outside the narrowed deferred items.
+- **Pending:** my review of the diff.
+- **Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I approved the D3 decisions on 2026-09-28 at 14:42 UTC. My review of the resulting documentation
+changes is pending.
+
+### 2026-09-28 — Security and authentication architecture (D4)
+
+**Date/Time:** 2026-09-28, 14:45–14:50 UTC (from session timestamps: D4 analysis requested at 14:45; decisions
+given at 14:50).
+
+**Activity:** Developer-led, AI-assisted review of the remaining security and authentication items for
+implementation, followed by documentation of the developer's decisions. No application code.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:** I asked Claude to review twelve security areas against the existing documents, separating what
+was already decided from what remained open, and checking for contradictions, without changing anything. I then
+asked Claude to record my decisions.
+
+**What the AI produced:**
+
+- An analysis finding the security model largely decided, with no substantive contradictions. It identified:
+  - `WWW-Authenticate` was specified only in architecture §19;
+  - the handling of malformed credentials was unspecified;
+  - the order of validation checks was left as an implementation choice;
+  - the checkpoint CLI's database access was undocumented;
+  - transport security (TLS) was not mentioned anywhere;
+  - FR-6's reference to an "internal or system identity" was stale after AD-5.
+- Documentation updates recording the decisions:
+  - `docs/requirements.md`: FR-6 wording; NFR-2 blocks for authentication failures, check order, and CLI database
+    access; a transport risk row in §10; the §12 Authentication and Authorization rows;
+  - `docs/architecture.md`: §6 Ordering and Failures, a §14 CLI access row, the §19 `401` row, and a §20
+    limitation;
+  - ADR-0008: check order, authentication failures, transport, and two alternatives;
+  - ADR-0009: the CLI's read-only access.
+
+**What I decided:**
+
+- D4-a: every authentication failure returns `401` with `WWW-Authenticate: Bearer` and the same Problem Details
+  structure. This covers a missing header, a non-Bearer scheme, an empty or malformed token, multiple headers, and
+  unknown credentials.
+- D4-b: fixed order — authenticate, authorize, validate the request, look up resources.
+- D4-c: the checkpoint CLI uses read-only database access; exact role names and grants remain implementation
+  details.
+- D4-d: plain HTTP is documented as a prototype and local limitation, with TLS/HTTPS as a production
+  consideration and no prototype TLS requirement.
+- The FR-6 wording cleanup.
+- Kept deferred:
+  - how the CLI is presented with the operator's credential;
+  - exact database role names and grants;
+  - the logging format;
+  - RFC 6750 granular error distinctions;
+  - prototype TLS implementation.
+
+**Rationale:**
+
+- A uniform `401` gives callers no hint about why authentication failed.
+- A fixed order makes statuses deterministic and gives unauthorized callers no validation feedback.
+- Read-only CLI access follows least privilege.
+- Documenting the transport limitation closes a visible gap without adding scope.
+
+**Result:** Updated:
+
+- `docs/requirements.md`
+- `docs/architecture.md`
+- `docs/adr/0008-authentication-and-authorization.md`
+- `docs/adr/0009-database-privileges-and-tamper-boundary.md`
+- this log
+
+No application code, dependencies, or diagrams were changed.
+
+**Validation:**
+
+- **Automated checks (by Claude):** `git diff --check` reports no whitespace errors; relative links resolve; stale
+  D4 wording searches found no remaining occurrences.
+- **Pending:** my review of the diff.
+- **Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I approved D4-a to D4-d and the FR-6 cleanup on 2026-09-28 at 14:50 UTC. My review of the resulting
+documentation changes is pending.

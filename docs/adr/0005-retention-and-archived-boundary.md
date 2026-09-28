@@ -15,7 +15,7 @@ Records older than a configurable window must be archivable without verification
 - **Archived boundary.** Derived from the latest applicable retention event in the chain. There is no redundant retention-runs table. The latest retention event keeps its own payload values, because only a later retention event can archive it.
 - **Synchronous, bounded run.** `POST /audit/retention-runs` requires `retention:run`. `recordedBy` is the authenticated operator; no separate internal identity is needed. Under the append lock, the run determines the boundary and appends the retention event, then purges within the configured bound.
   - If no new records are eligible but an earlier purge is incomplete, the run resumes that outstanding purge without appending another retention event.
-  - It returns `201 Created` when a new event was recorded and its bounded purge completed.
+  - It returns `201 Created` when a new event was recorded and its bounded purge completed, with `Location: /audit/events/{retentionEventId}` (L-D2). The retention event is the persisted resource the run creates; there is no retention-run resource and no GET endpoint for runs.
   - It returns `200 OK` with the resumed-purge result when an outstanding purge was resumed and completed.
   - It returns `200 OK` with a structured "nothing eligible" result when there is neither a new eligible boundary nor unfinished purge work, and creates no event.
   - It returns `422` for an invalid request, configuration, or input.

@@ -62,7 +62,7 @@ Diagram: [diagrams/component-architecture.drawio](diagrams/component-architectur
 | **Export service** | Snapshot, bound check, pre-signing verification, bundle and manifest construction, signing, export audit event | verification, signing, append service |
 | **Checkpoint store adapter** | Read signed checkpoints from the external store (the service reads only; the CLI writes) | signing |
 | **Persistence** | SQLAlchemy 2.x Core repositories with explicit transaction control (isolation level, advisory lock, snapshot) | PostgreSQL |
-| **Configuration** | Typed settings: database connection, API-key configuration file, limits, retention window, purge bound, key and store locations, `CLIENT_ACCOUNT` vocabulary | environment, mounted files |
+| **Configuration** | Typed settings validated with plain Pydantic v2: scalar and secret settings and file paths from environment variables; the API-key file and the `CLIENT_ACCOUNT` vocabulary as separate mounted TOML files, read with `tomllib`; loaded once at startup, failing fast when invalid | environment, mounted files |
 | **Observability and errors** | Request identifiers, structured logs without payload values, credentials, or query strings; RFC 9457 Problem Details | — |
 | **Checkpoint CLI** (separate program) | Authorized checkpoint creation | integrity library, signing, persistence (read), checkpoint store |
 | **Offline export verifier** (separate program) | Verify export bundles (and checkpoint artifacts) without the service or database | integrity library, signature verification |
@@ -71,7 +71,7 @@ Diagram: [diagrams/component-architecture.drawio](diagrams/component-architectur
 
 ## 5. API/service boundary
 
-Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, NFR-7). The endpoint paths below follow the approved resource-oriented direction.
+Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, NFR-7). The endpoint paths below are final.
 
 | Method and path | Purpose | Capability |
 |---|---|---|
@@ -92,11 +92,16 @@ Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 See [ADR-0008](adr/0008-authentication-and-authorization.md).
 
 - **Credentials.** Callers present a static API key as a Bearer credential. The service hashes the presented key with SHA-256 and compares it with configured hashes in constant time. Raw keys are never stored or committed.
-- **Configuration.** A mounted configuration file outside the database maps each key hash to a non-secret principal ID and its role or capabilities. A database writer therefore cannot grant itself credentials.
+- **Configuration.** A mounted TOML file outside the database, read with the standard library's `tomllib`, maps each principal to a non-secret principal ID, exactly one approved prototype role, and one or more lowercase hexadecimal SHA-256 key hashes (to support rotation). A database writer therefore cannot grant itself credentials.
+  - The approved role-to-capability mapping is authoritative; the file cannot list arbitrary capabilities.
+  - Raw keys are machine-generated with at least 128 bits of entropy (applying to the raw key, not the digest) and are never stored in PostgreSQL, Git, or logs.
+  - The service and CLI load the file once at startup, and changes require a restart. They fail fast on invalid configuration: missing or malformed file, unknown fields, duplicate principal IDs or key hashes, invalid hash format, unknown role, a principal with no keys, no principals, or an invalid principal ID.
+  - Errors never echo raw keys or hash values.
+  - See ADR-0008 (D3).
 - **Principal.** The principal ID becomes `recordedBy` for every event the caller causes, including system events created on the caller's request.
 - **Capabilities.** Each route declares one capability. The prototype roles (writer, auditor, regulator, administrator) are a prototype security boundary, not an assignment requirement or an enterprise RBAC design.
-- **Ordering.** Authorization is enforced before resource lookup, so an unauthorized caller cannot infer whether a resource exists. Its order relative to body validation is an implementation choice, not a requirement.
-- **Failures.** Missing or invalid credentials return `401`; a missing capability returns `403`. Denied attempts are logged operationally and never appended to the audit chain.
+- **Ordering.** Requests are processed in a fixed order (D4): authenticate (`401`), authorize (`403`), validate the request (`400`/`422`), then look up resources (`404`/`409`). An unauthorized caller therefore cannot infer whether a resource exists, and receives no validation feedback.
+- **Failures.** Every authentication failure returns `401` with `WWW-Authenticate: Bearer` and the same Problem Details structure (D4). This covers a missing Authorization header, a non-Bearer scheme, an empty or malformed token, multiple Authorization headers, and unknown credentials. A missing capability returns `403`. Denied attempts are logged operationally and never appended to the audit chain.
 
 ## 7. Audit event lifecycle
 
@@ -141,7 +146,7 @@ See [ADR-0005](adr/0005-retention-and-archived-boundary.md).
 2. If new records are eligible, append a retention system event recording the cutoff and `upToSequence`; this event establishes the new archived boundary. `recordedBy` is the authenticated operator; no separate internal identity is used.
 3. Purge recoverable values and salts for records at or below the current boundary, within the configured bound. If no new records are eligible but an earlier purge is incomplete, the run resumes that outstanding purge without appending another retention event.
 4. Respond:
-   - `201 Created` when a new retention event was recorded and its bounded purge completed;
+   - `201 Created` when a new retention event was recorded and its bounded purge completed, with `Location: /audit/events/{retentionEventId}`. The retention event is the persisted resource the run creates; there is no retention-run resource;
    - `200 OK` with the resumed-purge result when no new records were eligible and an outstanding purge was resumed and completed;
    - `200 OK` with a structured "nothing eligible" result when there is neither a new eligible boundary nor unfinished purge work;
    - `422` for an invalid request, configuration, or input;
@@ -162,7 +167,7 @@ See [ADR-0006](adr/0006-checkpoint-trust-anchor.md).
 - **Creation.** Checkpoints are created explicitly by an authorized **checkpoint CLI**, not by a public HTTP endpoint. The CLI requires the `checkpoint:create` capability from the operator's credential, uses the checkpoint signing key, and writes to the checkpoint store configured for the deployment. It does not accept arbitrary output paths.
 - **Verification before signing.** The CLI verifies the applicable audit chain state before creating and signing a checkpoint. If verification fails, it refuses to create or sign the checkpoint, so no trusted checkpoint is ever created over known-bad chain state.
 - **Why not an HTTP endpoint.** Checkpoints are trust anchors. Keeping their creation off the public API removes a remotely reachable signing operation, keeps the capability out of reach of ordinary writers, readers, auditors, and regulators, and makes checkpoint creation a deliberate operator action.
-- **Artifacts.** Checkpoints are deterministic, signed artifacts (canonical content plus Ed25519 signature) stored outside the audit database. The service and the offline verifier read them. The offline verifier loads checkpoint artifacts, verifies their signatures, establishes the trusted checkpoint boundary, and uses that boundary during independent export verification, without the live service or database.
+- **Artifacts.** Checkpoints are deterministic, signed artifacts (canonical content plus Ed25519 signature) stored outside the audit database. The service and the offline verifier read them. The offline verifier loads supplied checkpoint artifacts and verifies their signatures, without the live service or database. It uses a checkpoint during export verification only when the checkpoint can be directly anchored to signed export evidence (Section 13).
 - **Protection.** The tamper actor has database privileges only and cannot modify or replace the checkpoint store or the signing key.
 - **What they enable.** Record modification is detected without a checkpoint. After a checkpoint is created, tail truncation below it is reported as `CHAIN_TRUNCATED`, and a full rewrite with recomputed hashes is reported as `ANCHOR_MISMATCH`.
 - **Limitation.** Records appended after the latest checkpoint can be rewritten, fabricated, or truncated by an attacker with database write access (FR-4).
@@ -188,7 +193,12 @@ The **offline verifier** runs in the recipient's environment without the service
 - recomputes commitments, `contentHash`, and `recordHash`;
 - checks the record list and count;
 - validates missing-value authorization against the signed retention evidence and any included redaction events; and
-- when checkpoint artifacts are supplied, loads them, verifies their signatures, and uses the trusted checkpoint boundary during export verification (Section 12).
+- when checkpoint artifacts are supplied, loads them, verifies their signatures, and handles each one as follows:
+  - if the checkpoint's sequence equals `asOfSequence`, its `recordHash` must equal the signed `asOfRecordHash`;
+  - if its sequence matches an included record, its `recordHash` must equal that record's signed and recomputed `recordHash`;
+  - otherwise the checkpoint cannot be directly anchored to the export, and is reported as "not applicable / insufficient evidence". That is not a chain-integrity failure, and the other checks continue.
+
+A supplied checkpoint therefore does not establish a trusted boundary for every export. Exports do not carry intervening chain-link evidence to bridge arbitrary recipient checkpoints. Where a checkpoint cannot be anchored, assurance rests on the service's pre-signing verification (which includes checks against the service's own checkpoint store) and on the export signature.
 
 The exact manifest schema and retention-evidence representation are implementation and documentation details, constrained by the rule that the evidence must remain inside the signed manifest.
 
@@ -200,6 +210,7 @@ See [ADR-0009](adr/0009-database-privileges-and-tamper-boundary.md).
 |---|---|---|
 | Application role | Normal service operation | Insert and select immutable records; insert, select, and delete recoverable values and salts. No update or delete on immutable records. |
 | Owner / migration role | Schema ownership and migrations | Schema changes; not used by the running service |
+| Checkpoint CLI access | Chain verification before checkpoint signing | Read-only access to the audit data (D4); no insert, update, or delete |
 | Tamper actor | Demonstrations of detection | Privileged direct modification of the database, outside the application trust boundary |
 
 Immutable records are additionally protected by a database-level guard against update and delete for the application role. Exact grants are an implementation detail.
@@ -241,7 +252,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 
 | Condition | Behavior |
 |---|---|
-| Missing or invalid credentials | `401` with `WWW-Authenticate` |
+| Any authentication failure (missing, non-Bearer, empty or malformed, multiple headers, unknown key) | `401` with `WWW-Authenticate: Bearer`, uniform Problem Details |
 | Missing capability | `403`, before resource lookup |
 | Invalid request or reserved event type from a public caller | `422` |
 | Redaction target missing | `404` |
@@ -268,6 +279,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Synchronous retention bounds each run; large backlogs need several runs.
 - Payload keys and structure remain visible after redaction.
 - Prototype secrets share the application host.
+- The prototype serves plain HTTP for local use, so Bearer API keys are not encrypted in transit. TLS/HTTPS is a production consideration, not a prototype requirement (D4).
 
 ## 21. Deferred implementation details
 
@@ -277,7 +289,8 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Retention-run response schema.
 - Retention event resource identity; export audit event payload fields.
 - Commitment byte layout (to be documented for verifiers).
-- Reserved namespace prefix, access-event vocabulary, and configuration layout.
+- Reserved namespace prefix and access-event vocabulary names.
+- Exact environment-variable names and configuration file paths, the principal-ID pattern, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
 - Table and column names, exact database grants, limits, batch sizes, cursor encoding, advisory-lock key, and timeouts.
 - Dependency gates: RFC 8785 library adoption and `cryptography` approval, with outcomes recorded before the integrity and signing code is implemented.
 

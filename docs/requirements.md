@@ -252,8 +252,9 @@ Retention model (design decision, Focused Discussion #3):
   - Under the append lock, the eligible boundary is determined and, if it is new, the retention event is appended.
   - Recoverable values are then purged within the configured bound.
   - An unfinished purge is resumable. If a run finds no newly eligible records but an unfinished purge exists, it resumes that purge without appending another retention event.
+- **Endpoint.** `POST /audit/retention-runs` performs the synchronous retention operation. There is no separate retention-run resource. The persisted resource a run can create is the retention system event.
 - **Status behavior.**
-  - `201 Created` when a new retention event is recorded and its purge completes;
+  - `201 Created` when a new retention event is recorded and its purge completes, with a `Location` header referencing the new retention event (`/audit/events/{retentionEventId}`);
   - `200 OK` when an unfinished purge is resumed and completes;
   - `200 OK` when nothing is eligible and no unfinished purge exists (no retention event is created);
   - `422` for an invalid request, configuration, or input; and
@@ -307,13 +308,13 @@ Redaction design (design decision, Focused Discussion #3):
   - `409` when no new values would be redacted, the target is archived, or the target is a system-generated retention or redaction event; and
   - `401` / `403` by convention.
 
-  The operation's endpoint path is not finalized.
+  The endpoint is `POST /audit/events/{id}/redactions`.
 
 Response representation of redacted values is defined in FR-2. Authorization of missing values is defined in FR-3.
 
 Redaction security (design decision, Focused Discussion #4):
 
-- only principals with the `events:redact` capability may redact (NFR-2); writers, auditors, regulators, and any internal or system identity cannot;
+- only principals with the `events:redact` capability may redact (NFR-2); writers, auditors, and regulators cannot;
 - separation of duties and second-approver workflows are production requirements outside the prototype; and
 - system-generated retention and redaction events cannot themselves be redacted in the prototype, and their payloads use fixed, server-defined schemas.
 
@@ -351,7 +352,12 @@ Export design (design decision, Focused Discussion #3):
   - recomputes value commitments, `contentHash`, and `recordHash`;
   - checks the records against the manifest list and count;
   - validates the authorization of missing values (FR-3) when the authorizing events or signed retention evidence are present in the export (approved in principle, Focused Discussion #4); and
-  - when checkpoint artifacts are supplied, verifies their signatures and uses the trusted checkpoint during export verification (FR-4).
+  - when checkpoint artifacts are supplied (FR-4), verifies each checkpoint's signature, and uses the checkpoint only when it can be directly anchored to signed export evidence *(design decision, L-D1)*:
+    - if the checkpoint's sequence equals `asOfSequence`, its `recordHash` must equal the signed `asOfRecordHash`;
+    - if its sequence matches an included record, its `recordHash` must equal that record's signed and recomputed `recordHash`;
+    - otherwise the checkpoint is reported as "not applicable / insufficient evidence". That is not in itself a chain-integrity failure, and the other export checks continue.
+
+    Exports do not include intervening chain-link evidence to bridge supplied checkpoints to the export.
 
   Verification output never exposes sensitive payload values.
 - **Status behavior.** Errors use RFC 9457 Problem Details:
@@ -378,7 +384,7 @@ Export security (Focused Discussion #4):
 - **Capability.** Creating an export requires the `export:create` capability, separate from `events:read` (NFR-2). *(Design decision)*
 - **Export audit event.** Creating an export is treated as an auditable, security-sensitive operation. After the bundle is built and signed, an export audit event in the reserved system-event namespace is appended before the bundle is returned. If the event cannot be appended, no bundle is returned and the response is `503`. The event's payload uses a fixed, server-defined schema. *(Approved in principle; a developer security decision, not an assignment requirement)*
 - **Identifying fields.** The export audit event inherits its identifying fields from the export scope. An `{actorId}` export sets `actorId` to the exported actor; a `{resourceId, resourceType}` export sets `resourceType` and `resourceId` to the exported resource. Fields not supplied by the scope use fixed, server-defined values. The event does not change the export snapshot: it is appended after `asOfSequence`. *(Design decision)*
-- **Method.** Export uses `POST`, because creating an export has this audit side effect. *(Design decision)*
+- **Method.** Export uses `POST /audit/exports`, because creating an export has this audit side effect. *(Design decision)*
 - **Signing.** Export manifests are signed with Ed25519. The required `cryptography` dependency shall be validated and explicitly approved during implementation planning. *(Approved in principle)*
 - **Key identifier.** `keyId` is the SHA-256 fingerprint of the raw public key. The design supports key rotation, verification of historical signatures, and a trust anchor obtained out of band rather than from the live service. *(Approved in principle)*
 
@@ -497,14 +503,31 @@ Authorization controls are developer-derived engineering requirements supporting
 
 - the prototype uses static API keys presented as Bearer credentials;
 - only SHA-256 hashes of keys are stored, and credentials are compared in constant time;
-- API-key configuration (key hashes, principal IDs, and capabilities) is supplied through mounted configuration outside the database, not stored in the database;
-- raw API keys shall never be committed;
+- API-key configuration (key hashes, principal IDs, and roles) is supplied through mounted configuration outside the database, not stored in the database;
+- raw API keys shall never be committed, stored in PostgreSQL, or written to logs;
 - each key maps to a configured, non-secret principal ID, which becomes `recordedBy` (FR-1); and
 - production identity-provider integration remains out of scope (§7).
+
+**API-key configuration (design decision, D3):**
+
+- the API-key configuration is a separate mounted TOML file. Each principal has exactly one approved prototype role (the role-to-capability mapping below is authoritative) and one or more lowercase hexadecimal SHA-256 key hashes;
+- raw API keys shall be machine-generated with at least 128 bits of entropy (a requirement on the raw key, not the SHA-256 digest);
+- the service and the checkpoint CLI shall fail fast at startup on invalid configuration, and configuration errors shall not echo raw keys or hash values;
+- configuration is loaded once at startup, and changes require a restart; and
+- tests use deterministic fake keys and require no real secrets.
+
+Other structured configuration (such as the Scenario C vocabulary) is supplied in a separate TOML file. Scalar and secret settings, and file paths, come from environment variables. The format details, validation rules, and library choice are recorded in ADR-0008.
 
 **Endpoints without authentication (prototype):** `/health/live` and `/health/ready` require no authentication. `/docs` and `/openapi.json` may be public in the prototype. That is not a production security requirement.
 
 **Authorization (design decision, Focused Discussion #4):** authorization is capability-based and enforced at the API/service boundary. Authorization checks occur before resource lookup, so an unauthorized caller cannot infer whether a resource exists.
+
+**Authentication failures and check order (design decision, D4):**
+
+- every authentication failure returns `401 Unauthorized` with `WWW-Authenticate: Bearer` and the same Problem Details structure. This covers a missing Authorization header, a non-Bearer scheme, an empty or malformed token, multiple Authorization headers, and unknown credentials;
+- requests are processed in a fixed order: authenticate (`401`), then authorize (`403`), then validate the request (`400`/`422`), then look up resources (`404`/`409`).
+
+**Checkpoint CLI database access (design decision, D4):** the checkpoint CLI uses read-only database access for chain verification. Exact role names and grants are implementation details.
 
 Prototype capability model (a prototype security boundary, not an assignment requirement or a production role-based access-control design):
 
@@ -735,6 +758,7 @@ The implementation shall demonstrate the clarified interpretation of regulatory 
 | Export may omit necessary integrity evidence | Recipients cannot independently verify evidence | Per-record integrity evidence, signed manifest (approved in principle), full verification before signing, and a standalone verifier (FR-7) |
 | Privileged database access may bypass application controls | Unauthorized modification of audit records | Enforce least privilege and test direct datastore tampering |
 | Prototype security assumptions may differ from production | Production deployment may require additional controls | Explicitly document authentication, key management, scaling, and deployment limitations |
+| The prototype serves plain HTTP for local use | Bearer API keys travel unencrypted if the service is exposed beyond the local environment | Documented prototype limitation; TLS/HTTPS is a production consideration and not a prototype requirement (D4) |
 | No external timestamping authority in prototype | Complete rewrite detection may depend on the chosen trust boundary | Explicitly document attacker model, trust assumptions, and limitations |
 | A writing service can assert an arbitrary `actorId` | Misleading audit evidence about who caused an event | Record the authenticated technical caller in server-assigned `recordedBy` |
 
@@ -767,13 +791,13 @@ Developer decisions, approvals, validation results, and final acceptance remain 
 | Concurrent writes | Concurrency tests showing that parallel appends produce contiguous sequences and an intact chain, and that the database constraints reject a forced fork |
 | Rewrite/tamper detection | Controlled datastore modification and verification demonstration covering modification, middle deletion, insertion, reordering, tail truncation, and full rewrite (the last two against a signed checkpoint) |
 | Verification | Tests of the v1 response fields, violation types, `violationCount`, empty-chain behavior, the missing-value authorization rule, and absence of payload values, payload keys, `actorId`, `resourceId`, and `recordedBy` |
-| Authentication | Tests of Bearer API-key authentication, `401` for missing or invalid credentials, hashed key storage, `recordedBy` set from the principal ID, and unauthenticated health endpoints |
-| Authorization | Tests of the prototype capability matrix, `403` for missing capabilities, and authorization checked before resource lookup |
+| Authentication | Tests of Bearer API-key authentication, a uniform `401` with `WWW-Authenticate: Bearer` for every authentication failure (missing header, non-Bearer scheme, empty or malformed token, multiple headers, unknown key), hashed key storage, `recordedBy` set from the principal ID, and unauthenticated health endpoints |
+| Authorization | Tests of the prototype capability matrix, `403` for missing capabilities, and the fixed check order (authenticate, authorize, validate, look up), including authorization before resource lookup |
 | System events | Tests that public submissions of reserved event types are rejected with `422`, that redacting a system event is rejected with `409`, and that redaction and export events inherit their identifying fields as specified |
-| Retention | Retention execution plus post-retention verification, showing the retention event and `upToSequence` and payload purge with immutable records retained. Status outcomes: `201` for a new event with completed purge; `200` for a resumed purge; `200` when nothing is eligible; `422`; and `503` when the execution bound prevents completion, followed by a successful resumed run. No duplicate retention event is created when a purge is resumed. |
+| Retention | Retention execution plus post-retention verification, showing the retention event and `upToSequence` and payload purge with immutable records retained. Status outcomes: `201` with `Location` referencing the new retention event, for a new event with completed purge; `200` for a resumed purge; `200` when nothing is eligible; `422`; and `503` when the execution bound prevents completion, followed by a successful resumed run. No duplicate retention event is created when a purge is resumed. |
 | Checkpoints | Checkpoint creation through the authorized CLI (`checkpoint:create`), including refusal to create or sign a checkpoint when chain verification fails |
 | Redaction | Redaction execution plus integrity and auditability verification, showing that `contentHash` is unchanged, remaining values verify against their commitments, the redacted value and salt are removed, value deletion and the redaction event are atomic, partial and repeated redaction behave as specified, archived records are rejected, and pointer and reason errors do not echo input |
-| Export | Export generation plus standalone verification, covering `POST` with `export:create`, each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest including `requestedBy`, the export audit event and `503` when it cannot be appended, offline verification using the signed retention evidence and supplied checkpoints, missing-value authorization in the verifier, refusal to sign when verification fails, and an empty result |
+| Export | Export generation plus standalone verification, covering `POST` with `export:create`, each allowed scope and rejected combination, snapshot consistency, inclusion of archived records, the signed manifest including `requestedBy`, the export audit event and `503` when it cannot be appended, offline verification using the signed retention evidence and supplied checkpoints (a match or mismatch when anchored at `asOfSequence` or at an included record, and "not applicable / insufficient evidence" otherwise), missing-value authorization in the verifier, refusal to sign when verification fails, and an empty result |
 | Scenario C | Clarified interpretation, documented assumptions and scope, configuration-driven `CLIENT_ACCOUNT` validation (with reserved system events exempt), demonstration data, tests, and explicit scope-outs |
 | Security | Authorization/privilege tests and security review |
 | Quality | Linting, automated tests, integration validation, and performance measurements |
@@ -800,10 +824,10 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
   - selection of the canonicalization library, subject to the adoption check;
   - validation and approval of the `cryptography` dependency;
   - how retention events identify their resource, and the retention response schema;
-  - the redaction endpoint path, and any retention endpoint;
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the exact commitment encoding;
-  - the reserved namespace prefix, the access-event vocabulary, and the configuration layout;
+  - the reserved namespace prefix and the access-event vocabulary names;
+  - exact environment-variable names, configuration file paths, the principal-ID pattern, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
   - table and schema names;
   - retention batch size and execution bound, export size limit, and reason length.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).

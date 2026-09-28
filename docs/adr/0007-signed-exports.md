@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (manifest schema and retention-evidence representation deferred; Ed25519 approved in principle, subject to the `cryptography` dependency gate)
 - **Date:** 2026-09-28
-- **Decision owner:** Developer (Focused Discussions #3 and #4, decisions E1–E10, N8–N14, S18–S22, S24; AD-7, RB-3)
+- **Decision owner:** Developer (Focused Discussions #3 and #4, decisions E1–E10, N8–N14, S18–S22, S24; AD-7, RB-3, L-D1)
 
 ## Context
 
@@ -20,7 +20,12 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
   - recomputes commitments, `contentHash`, and `recordHash`;
   - checks the record list and count;
   - validates missing-value authorization against the signed retention evidence and any included redaction events; and
-  - when checkpoint artifacts are supplied, verifies their signatures and uses the trusted checkpoint boundary during export verification (ADR-0006).
+  - when checkpoint artifacts are supplied, verifies their signatures and uses a checkpoint only when it can be directly anchored to signed export evidence (L-D1, ADR-0006):
+    - at `asOfSequence`, compared with the signed `asOfRecordHash`; or
+    - at an included record's sequence, compared with that record's signed and recomputed `recordHash`.
+
+    Otherwise the checkpoint is reported as "not applicable / insufficient evidence", which is not a chain-integrity failure, and the other checks continue.
+- **No bridging evidence.** Exports do not contain intervening chain-link evidence solely to bridge arbitrary recipient checkpoints. The signed manifest remains the authoritative signed export evidence.
 
 ## Consequences
 
@@ -38,6 +43,7 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
 ## Alternatives considered
 
 - **Including the intervening chain entries instead of a signed manifest:** documented as a future extension.
+- **Including hash-only chain-link evidence to bridge recipient-supplied checkpoints:** not adopted (L-D1). It would enlarge exports with out-of-scope chain data, and it would need a range-selection rule.
 - **Retention evidence outside the signature:** rejected by developer decision RB-3.
 - **`GET` export:** rejected because export creation has an audit side effect.
 

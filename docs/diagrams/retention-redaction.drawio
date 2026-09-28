@@ -49,7 +49,7 @@
         <mxCell id="r13" value="New retention event&lt;br&gt;recorded in this run?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="90" y="630" width="200" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="r7" value="201 Created" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="r7" value="201 Created&lt;br&gt;+ Location (retention event)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="30" y="750" width="150" height="50" as="geometry" />
         </mxCell>
         <mxCell id="r14" value="200 OK —&lt;br&gt;resumed purge completed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">

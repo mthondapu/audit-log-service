@@ -2,7 +2,7 @@
 
 - **Status:** Accepted in principle (exact grants deferred to implementation)
 - **Date:** 2026-09-28
-- **Decision owner:** Developer (AD-4, RB-1; requirements NFR-1)
+- **Decision owner:** Developer (AD-4, RB-1, D4; requirements NFR-1)
 
 ## Context
 
@@ -14,6 +14,7 @@ Append-only behavior must not depend only on application code. The assignment's 
   1. **Application role:** inserts and selects immutable records; inserts, selects, and deletes recoverable values and salts. It has **no update or delete** on immutable records, and a database-level guard also rejects such changes.
   2. **Owner / migration role:** owns the schema and applies migrations. It is not used by the running service.
   3. **Tamper actor:** privileged direct modification for demonstrations, **outside the application trust boundary**.
+- **Checkpoint CLI access (D4):** the checkpoint CLI uses read-only database access for chain verification, with no insert, update, or delete. Exact role names and grants remain implementation details.
 - **Tamper tooling** is separate from the application and never uses the normal API. How it obtains its privileges belongs to the tooling, not to the application architecture.
 - The tamper actor **cannot access or modify** the checkpoint store, signing keys, or API-key configuration.
 
