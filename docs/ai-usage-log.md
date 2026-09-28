@@ -1370,3 +1370,145 @@ names, the missing-database behavior, and the downgrade policy were deferred or 
 
 **Sign-off:** I gave the P1–P5 decisions recorded above. My review and sign-off of the Phase 4 implementation are
 pending.
+
+### 2026-09-28 — Phase 5: core audit event API
+
+**Date/Time:** 2026-09-28, from 17:01 UTC (from session timestamps: Phase 5 requested at 17:01; my decisions on
+C1–C3 and D1–D4 given at 17:07).
+
+**Activity:** Developer-led, AI-assisted implementation of `POST /audit/events` and `GET /audit/events/{id}` on top of
+the Phase 1 security, Phase 3 integrity, and Phase 4 persistence layers.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Previously approved API decisions:**
+
+- the event model and the record representation (FR-1, FR-2);
+- `201` with `Location`, Problem Details, camelCase, and non-idempotent `POST` (NFR-7);
+- the D4 check order (authenticate, authorize, validate, look up) and the uniform `401`;
+- the Scenario C validation scope (FR-8);
+- the configurable future-timestamp skew (§3 row 16).
+
+**Clarifications before coding.** Claude stopped on three conflicts between my Phase 5 brief and the approved
+documents, and on API values that were still open. My decisions (17:07 UTC):
+
+- **C1:** `resourceType` and `resourceId` stay **required**. My brief had made them optional, which would have
+  changed the Phase 3 hash contract and the Phase 4 schema.
+- **C2:** the representation includes `redactedPaths` and `archived`, as FR-2 requires. In Phase 5 they are `[]` and
+  `false`.
+- **C3:** vocabulary validation applies only when `resourceType` is `CLIENT_ACCOUNT` (FR-8).
+- **D1:**
+  - `eventType` and `resourceType` match `^[A-Z][A-Z0-9_]{0,63}$`;
+  - `actorId` and `resourceId` are 1–256 characters;
+  - payload depth is at most 32, and the request body at most 64 KiB;
+  - the reserved prefix is `AUDIT_LOG_`, rejected with `422`.
+- **D2:** `AUDIT_LOG_DATABASE_URL` (a member of `audit_log_app`, never the owner), `AUDIT_LOG_API_KEYS_FILE`,
+  `AUDIT_LOG_VOCABULARY_FILE`, and `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS` (default 300). Configuration is loaded once and
+  fails fast, reusing the Phase 1 loaders.
+- **D3:** a server-generated UUID request ID in `X-Request-ID` and in every Problem Details body; an incoming
+  `X-Request-ID` is ignored.
+- **D4:** `400` for malformed JSON; `404` for a missing event or a non-UUID identifier; `413` above 64 KiB; `415` for a
+  non-JSON content type; `422` for duplicate keys and other validation failures; `503` when the database is
+  unavailable or the append lock times out.
+
+These decisions were recorded in `requirements.md` (FR-1, §3 row 16, FR-2, NFR-7, §13), `architecture.md` (§5, §21),
+and ADR-0008 before implementation.
+
+**What the AI implemented:**
+
+- `config/settings.py`: loads the four D2 variables once, reusing the Phase 1 API-key and vocabulary loaders. It fails
+  fast, and errors name the variable, never its value. The database URL is excluded from `repr`.
+- `application/events.py`, the application layer:
+  - a strict request schema that rejects unknown and server-assigned fields;
+  - the D1 constraints;
+  - U+0000 and unpaired-surrogate checks;
+  - RFC 3339 timestamps normalized to the canonical form through the Phase 3 formatter;
+  - the numeric domain, checked through the Phase 3 `canonicalize`;
+  - Scenario C for `CLIENT_ACCOUNT`, and the reserved `AUDIT_LOG_` prefix;
+  - `record_event`, which appends through Phase 4 and then checks the future skew against the database `recordedAt`
+    inside the same transaction, so a rejection rolls back without a sequence gap.
+
+  Error messages are fixed text; unknown field names are not echoed.
+- `api/`:
+  - thin routes in the D4 order;
+  - explicit body reading (`415`, `413` including chunked bodies, `400`, and `422` for duplicate keys);
+  - the public representation, with the payload rebuilt from the committed structure and stored canonical values, so
+    `POST` and `GET` return identical bodies;
+  - the request-ID middleware;
+  - Problem Details for every error, including framework `404` and `405`, `503` for database errors and lock timeouts,
+    and a generic `500`;
+  - logs that record only request IDs, methods, paths without query strings, statuses, and exception class names;
+  - an OpenAPI document with the request schema, all statuses, Problem Details media types, and Bearer security;
+  - a startup check that refuses a database login able to `UPDATE`, `DELETE`, or `TRUNCATE` audit records.
+- `persistence/audit_log.py`: added `load_entry` (read one record with its values). `load_chain_entries` now shares its
+  query with it; its behavior is unchanged and the Phase 4 tests pass.
+- `problem_details.py`: added a generic `problem()` builder. The existing builders are unchanged.
+- `README.md`: how to run the service.
+
+**Implementation choices within the approved decisions** (for my review):
+
+- **Re-read after append.** `POST` re-reads the record in its own transaction, so its representation equals `GET`'s
+  (numbers in canonical form, for example `1.0` as `1`).
+- **Connect timeout.** The service's database engine has a 5-second connect timeout, added after a test showed that a
+  refused connection otherwise took about 130 seconds on this machine before the approved `503`.
+- **Framework errors.** An unknown route returns a Problem Details `404`, and an unsupported method a `405` with
+  `Allow`. Unexpected errors return a generic `500`.
+- **Missing values.** A missing stored payload value (possible only through tampering until redaction exists) is
+  rendered as `null`, while `redactedPaths` stays `[]` as decided in C2.
+
+**Discovered issue (not resolved; needs my decision):** the installed Starlette (1.7) warns that using `httpx` with its
+test client is deprecated in favor of `httpx2`, and it resolves the client's types through `httpx2`. The tests keep
+the approved `httpx`; a small typed helper keeps Pyright strict clean. No dependency was added.
+
+**Tests (197 new, 616 in total):**
+
+- **Unit (104):**
+  - settings (19);
+  - submission validation (77), including one Hypothesis property: any valid payload is accepted unchanged;
+  - OpenAPI (6);
+  - the app factory (2).
+- **API integration against real PostgreSQL (93):**
+  - authentication: 6 failure forms × `POST` and `GET`, all a uniform `401` checked before validation;
+  - authorization: `403` before validation and before lookup, and readers allowed;
+  - `POST`:
+    - success: `201`, `Location`, all 15 fields, genesis and linking, database `recordedAt`;
+    - timestamps: normalization, the skew limits (accepted within, rejected beyond with no gap);
+    - Scenario C, the reserved namespace, required and server-assigned fields;
+    - invalid fields, numbers, and text;
+    - body parsing: `400`, duplicate keys, hostile nesting, `415`, and `413` (declared and chunked);
+    - the 64 KiB boundary;
+  - persistence and integrity: the response matches the stored record, `GET` equals `POST`, identical posts create
+    distinct records, the chain verifies, and no commitment storage is exposed;
+  - `GET`: `404` for unknown and non-UUID identifiers, and an uppercase identifier accepted;
+  - request IDs, routing errors, and disclosure checks;
+  - failures: `503` for an unreachable database and for a lock timeout, a `500` with no details, a `500` with
+    rollback on an internal inconsistency, the startup refusal of the owner login, and logs free of credentials,
+    payload values, and query strings;
+  - one Hypothesis property: any valid payload round-trips through the API.
+
+**Documentation updates:** `requirements.md`, `architecture.md`, ADR-0008 (the decisions, before coding), and
+`README.md`.
+
+**Deferred:**
+
+- `GET /audit/events`, verification, retention, redaction, exports, checkpoints, and health endpoints;
+- the real `redactedPaths` and `archived` derivation;
+- the access-event vocabulary names;
+- the `httpx2` question above.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 616 passed (471 unit, 144 integration, and 1 package test), with 100% statement and branch
+  coverage and no coverage exclusions.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the C1–C3 and D1–D4 decisions recorded above. My review and sign-off of the Phase 5
+implementation are pending.

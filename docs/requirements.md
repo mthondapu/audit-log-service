@@ -47,7 +47,7 @@ The following establish the behavioral baseline. Detailed technical mechanisms r
 | 13 | An exported audit bundle shall contain sufficient integrity evidence for the integrity of its records to be independently verified without trusting the live service. Completeness of the export selection is an attested claim, not something the hashes alone can prove. The direction, approved in principle, is a signed export manifest (FR-7). | Developer-derived + Design decision | Provides evidence that can be validated outside the running service without overstating what it proves. |
 | 14 | Duplicate-write idempotency is not required for the initial version. | Developer-derived | Keeps the initial implementation focused; duplicate events remain part of the audit history. |
 | 15 | Full-history verification is required for the initial version. More advanced checkpoint/range verification may be considered during design if justified. | Assignment + Developer-derived | Establishes a correctness-first baseline. |
-| 16 | A caller-supplied `timestamp` more than a configurable allowed skew (default 5 minutes) ahead of `recordedAt` shall be rejected. No lower bound is imposed. | Developer-derived | Catches clearly erroneous future times from writing services while accepting valid late-arriving historical events. |
+| 16 | A caller-supplied `timestamp` more than a configurable allowed skew (default 5 minutes, set by `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS`) ahead of `recordedAt` shall be rejected. No lower bound is imposed. | Developer-derived | Catches clearly erroneous future times from writing services while accepting valid late-arriving historical events. |
 
 ## 4. Functional Requirements
 
@@ -79,7 +79,13 @@ Events submitted with `resourceType` `CLIENT_ACCOUNT` are also subject to the co
 
 The surrogate, finite-number, and numeric-domain rules (with duplicate-key rejection) are required for deterministic canonical hashing. The U+0000 and microsecond-precision rules are required by PostgreSQL storage; rejecting rather than silently truncating timestamps is defensive validation. The numeric domain is an application-level restriction of this service, not a requirement of RFC 8785. RFC 8785 writes some whole-number doubles between 2^53 and 10^21 as plain integer digits (for example, `1e16` becomes `10000000000000000`), and that text would read back as an integer outside the ±(2^53−1) integer domain. Bounding every number to the same range keeps canonical text within the accepted input when it is parsed and canonicalized again, so verifiers need no special handling of RFC 8785's 10^21 formatting boundary. The range check is applied to the IEEE-754 double value, not to the exact decimal text: `9007199254740991.4` is accepted because it rounds to 2^53−1, and `9007199254740991.5` is rejected because it rounds to 2^53. Fractional and exponent-form numbers within the range remain permitted; there are no other numeric restrictions beyond the I-JSON/JCS profile and applicable storage constraints.
 
-Exact limits and patterns are implementation constraints documented with the API definition rather than in this baseline.
+Exact limits and patterns are implementation constraints documented with the API definition rather than in this baseline. The API definition (Phase 5, developer decision D1) sets them as follows:
+
+- `eventType` and `resourceType` match `^[A-Z][A-Z0-9_]{0,63}$`; both, like `actorId`, `resourceId`, and `payload`, are required;
+- `actorId` and `resourceId` are 1 to 256 characters;
+- `payload` is a JSON object nested at most 32 levels deep (the payload object itself is level 1);
+- the request body is at most 64 KiB; and
+- the reserved system-event namespace is every `eventType` beginning with `AUDIT_LOG_`; a public request using it receives `422`.
 
 Concurrent appends shall be serialized so that the chain cannot fork (NFR-1).
 
@@ -140,7 +146,7 @@ Record representation (design decision, Focused Discussion #3). In every respons
 - `redactedPaths` lists the JSON Pointers (RFC 6901) of redacted values, and is empty when none are redacted, so that a redacted value is distinguishable from a genuine JSON `null`; and
 - `archived` indicates whether the record is archived, meaning it is covered by a committed retention event; its payload values are no longer available, even if bounded physical purge work is still in progress or will resume in a later run (FR-5).
 
-`redactedPaths` and `archived` are derived response fields. They are not covered by any integrity hash (NFR-1). Because `redactedPaths` is derived from which values are missing, a value removed without authorization would also appear in it; verification (FR-3), not the response representation, determines whether a removal was legitimate.
+Until redaction and retention are implemented, every record is returned with `redactedPaths` `[]` and `archived` `false` (Phase 5, developer decision C2). `redactedPaths` and `archived` are derived response fields. They are not covered by any integrity hash (NFR-1). Because `redactedPaths` is derived from which values are missing, a value removed without authorization would also appear in it; verification (FR-3), not the response representation, determines whether a removal was legitimate.
 
 ### FR-3 — Verify Audit History
 
@@ -612,6 +618,11 @@ The API shall follow established HTTP/REST conventions. These are engineering co
 
 `POST` requests are not idempotent: because duplicate-write idempotency is not required (§3 #14), a client retry may record a duplicate event.
 
+Request identifiers and status codes (Phase 5, developer decisions D3 and D4):
+
+- the server generates a UUID for every request, returns it in the `X-Request-ID` response header, and includes it as `requestId` in every Problem Details response; an incoming `X-Request-ID` is ignored;
+- `400` for a request body that is not valid JSON; `401` and `403` as in NFR-2; `404` for a nonexistent event, including a path identifier that is not a UUID; `413` for a request body over 64 KiB; `415` for a content type other than JSON; `422` for duplicate JSON keys and every other validation failure; and `503` when the database is unavailable or an append cannot obtain the append lock in time.
+
 ## 6. Assumptions
 
 1. The initial implementation uses a single logical audit history rather than multiple independent tenant chains.
@@ -828,8 +839,8 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
 - **Implementation planning:**
   - how retention events identify their resource, and the retention response schema;
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
-  - the reserved namespace prefix and the access-event vocabulary names;
-  - exact environment-variable names, configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
+  - the access-event vocabulary names;
+  - configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation, and the environment-variable names, are decided in ADR-0008);
   - retention batch size and execution bound, export size limit, and reason length.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 

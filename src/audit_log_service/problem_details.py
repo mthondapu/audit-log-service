@@ -1,4 +1,4 @@
-"""RFC 9457 Problem Details for authentication and authorization failures (NFR-7, D4).
+"""RFC 9457 Problem Details responses (NFR-7, D4).
 
 These builders return plain data so they can be tested without HTTP routing; the API layer turns
 them into responses. Bodies are fixed text and never include credentials, hashes, or input.
@@ -6,6 +6,7 @@ them into responses. Bodies are fixed text and never include credentials, hashes
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from types import MappingProxyType
 
 PROBLEM_JSON_MEDIA_TYPE = "application/problem+json"
@@ -31,6 +32,16 @@ def _problem_body(
     if request_id is not None:
         body["requestId"] = request_id
     return MappingProxyType(body)
+
+
+def problem(status: int, detail: str, request_id: str | None = None) -> ProblemResponse:
+    """A Problem Details response with the standard title for `status` and a fixed detail."""
+    return ProblemResponse(
+        status=status,
+        body=_problem_body(
+            title=HTTPStatus(status).phrase, status=status, detail=detail, request_id=request_id
+        ),
+    )
 
 
 def authentication_failure(request_id: str | None = None) -> ProblemResponse:

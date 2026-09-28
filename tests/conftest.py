@@ -8,8 +8,11 @@ import hashlib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, cast
 
+import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from audit_log_service.config.api_keys import ApiKeyConfiguration, load_api_key_configuration
 
@@ -77,3 +80,17 @@ key_sha256 = [
 @pytest.fixture
 def api_key_configuration(write_file: WriteFile, valid_api_key_toml: str) -> ApiKeyConfiguration:
     return load_api_key_configuration(write_file("api-keys.toml", valid_api_key_toml))
+
+
+def api_client(app: Any) -> httpx.Client:
+    """A TestClient typed as the httpx.Client it subclasses.
+
+    The installed Starlette resolves its client types through `httpx2`, which this project does
+    not use, so Pyright cannot see them; at runtime TestClient is an `httpx.Client`.
+    """
+    return cast(httpx.Client, TestClient(app))  # pyright: ignore[reportUnknownArgumentType]
+
+
+@pytest.fixture
+def make_client() -> Callable[[Any], httpx.Client]:
+    return api_client

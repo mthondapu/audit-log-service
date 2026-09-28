@@ -67,9 +67,18 @@ Errors may identify the file, principal, and field, but never echo raw keys or h
 - A committed example configuration may contain intentionally invalid placeholders, so it cannot be deployed with a known credential.
 - Real and demo credentials belong in gitignored locations.
 
+**Environment variables (Phase 5 decision D2):**
+
+- `AUDIT_LOG_DATABASE_URL`: the service's database URL, for a login user that is a member of `audit_log_app`, never the migration owner;
+- `AUDIT_LOG_API_KEYS_FILE`: the API-key configuration file;
+- `AUDIT_LOG_VOCABULARY_FILE`: the Scenario C vocabulary file;
+- `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS`: the allowed future skew of a caller `timestamp`, default 300.
+
+The migration URL (`AUDIT_LOG_MIGRATION_DATABASE_URL`) is separate and is never part of the service's configuration (ADR-0009).
+
 **Deferred:**
 
-- exact environment-variable names and filesystem paths;
+- filesystem paths;
 - how the CLI is presented with the operator's credential;
 - the Scenario C vocabulary names;
 - `.gitignore` details;

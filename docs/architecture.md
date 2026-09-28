@@ -87,6 +87,8 @@ Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, N
 
 Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 
+**Implemented so far (Phase 5):** `POST /audit/events` and `GET /audit/events/{id}`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
+
 ## 6. Authentication and authorization
 
 See [ADR-0008](adr/0008-authentication-and-authorization.md).
@@ -294,8 +296,8 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Exact manifest schema and retention-evidence representation (inside the signed manifest).
 - Retention-run response schema.
 - Retention event resource identity; export audit event payload fields.
-- Reserved namespace prefix and access-event vocabulary names.
-- Exact environment-variable names and configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
+- Access-event vocabulary names.
+- Configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation, and the environment-variable names, are decided in ADR-0008 (D3).
 - Checkpoint CLI and tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).
 
 ## 22. Architecture decision references

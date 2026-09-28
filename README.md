@@ -23,6 +23,23 @@ The compose file runs PostgreSQL for local development only.
 
 Application login users are created outside source control as members of `audit_log_app`, which may only select and insert audit records (see ADR-0009).
 
+## Running the service
+
+The service reads its configuration from the environment once, at startup, and refuses to start if any of it is invalid:
+
+| Variable | Purpose |
+|---|---|
+| `AUDIT_LOG_DATABASE_URL` | Database URL for a login user that is a member of `audit_log_app` (never the owner; the service refuses a login that can update or delete audit records) |
+| `AUDIT_LOG_API_KEYS_FILE` | API-key configuration (see `config/api-keys.example.toml`) |
+| `AUDIT_LOG_VOCABULARY_FILE` | Scenario C vocabulary (see `config/client-account-vocabulary.example.toml`) |
+| `AUDIT_LOG_TIMESTAMP_SKEW_SECONDS` | Optional; how far a caller `timestamp` may be ahead of `recordedAt` (default 300) |
+
+```sh
+uv run uvicorn audit_log_service.api.app:create_app --factory
+```
+
+Implemented endpoints: `POST /audit/events` and `GET /audit/events/{id}`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+
 ## Tests
 
 - `uv run pytest tests/unit` runs the unit tests, which need no database.

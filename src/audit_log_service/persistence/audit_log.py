@@ -19,12 +19,12 @@ serializes writers. The integrity core computes every hash, commitment, and cano
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Connection, func, insert, select, text
+from sqlalchemy import Connection, Select, func, insert, select, text
 
 from audit_log_service.integrity.canonical import JsonValue
 from audit_log_service.integrity.commitments import PayloadValue, commit_payload
@@ -132,7 +132,18 @@ def load_chain_entries(connection: Connection) -> list[ChainEntry]:
     A single statement reads records and values, so the result reflects one snapshot even at
     READ COMMITTED.
     """
-    rows = connection.execute(
+    return _entries_from_rows(connection.execute(_records_with_values()).all())
+
+
+def load_entry(connection: Connection, record_id: uuid.UUID) -> ChainEntry | None:
+    """Load one record with its payload values, or None if no record has this id."""
+    rows = connection.execute(_records_with_values().where(audit_records.c.id == record_id)).all()
+    entries = _entries_from_rows(rows)
+    return entries[0] if entries else None
+
+
+def _records_with_values() -> Select[Any]:
+    return (
         select(
             audit_records,
             audit_payload_values.c.pointer,
@@ -146,8 +157,10 @@ def load_chain_entries(connection: Connection) -> list[ChainEntry]:
         )
         # `id` keeps each record's rows together even if tampering created duplicate sequences.
         .order_by(audit_records.c.sequence, audit_records.c.id, audit_payload_values.c.pointer)
-    ).all()
+    )
 
+
+def _entries_from_rows(rows: Sequence[Any]) -> list[ChainEntry]:
     entries: list[ChainEntry] = []
     current: AuditRecord | None = None
     values: dict[str, PayloadValue] = {}
