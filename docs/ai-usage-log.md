@@ -2172,3 +2172,128 @@ Tampering in the tests uses the owner engine; no trigger is disabled.
 
 **Sign-off:** I gave the Phase 10 decisions recorded above. My review and sign-off of the Phase 10 implementation are
 pending.
+
+### 2026-09-28 — Phase 11: export and offline verification
+
+**Date/Time:** 2026-09-28, from 22:45 UTC (from session timestamps: Phase 11 planning requested at 22:45;
+implementation decisions approved at 22:51).
+
+**Activity:** Developer-led, AI-assisted planning and implementation of FR-7: `POST /audit/exports`, signed export
+bundles, the export audit event, and offline export verification with checkpoint anchoring (L-D1).
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude produced a read-only Phase 11 plan. It classified each point as already
+specified, a safe implementation detail, or needing approval, and proposed seventeen decisions (E1 to E17):
+
+- the manifest schema and bundle envelope, and the `audit-log/v1/manifest` label;
+- the exported record shape and the retention evidence;
+- empty-chain values;
+- an optional export key, validated at startup, and its separation from the checkpoint key;
+- record and byte limits;
+- the export event identity and payload, including the `{resourceId}`-only case;
+- the 409 detail and the 500 for an invalid checkpoint store;
+- additional offline checks, CLI syntax and exit codes, the handling of invalid checkpoints, and the violation types;
+- scope validation rules;
+- response caching and logging rules.
+
+**My decision.** I approved E1 to E17 as proposed, restated each in final form, and added mandatory constraints (no
+export CLI, no `GET` or streaming, the store read before the snapshot, the check order, one snapshot, the event only
+after signing, `503` without a bundle when the event cannot be appended, key separation, and verifier independence).
+
+**What the AI implemented:**
+
+- `integrity/exports.py`:
+  - the manifest, record and bundle model;
+  - manifest signing;
+  - strict bundle parsing;
+  - `verify_export`, `anchor_checkpoint`, and `retention_evidence`.
+
+  It has no web, database, or configuration imports. `canonical.py` gains `MANIFEST_LABEL`. `checkpoints.py` exposes
+  its principal-id pattern.
+- `integrity/verification.py`: the redaction authorization, missing-value, and hash-match helpers made public for
+  reuse. `verify_chain` behaviour is unchanged, and all of its existing tests pass unchanged.
+- `application/exports.py` (request validation and the export flow) and `api/exports.py` (the route, with the
+  approved order, details, headers and logging); the OpenAPI document gains `ExportRequest` and `ExportBundle`.
+- `config/settings.py`: the export key (optional, validated, refused if it is the checkpoint key pair) and the limits.
+- `offline/verify.py`: the `export` subcommand.
+
+**Implementation interpretations** (for my review):
+
+- `AUDIT_LOG_EXPORT_MAX_BYTES` has an upper bound of 1 GiB, which is also the largest bundle the offline verifier
+  reads; the plan set only the default.
+- A bundle whose records are structurally malformed (wrong keys or types) is reported as `MANIFEST_INVALID`, because
+  E15 has no separate type for bundle structure.
+- An `AUDIT_LOG_EXPORT_SIGNING_KEY_FILE` that is set but blank fails startup, like other set-but-blank settings.
+- When a verifier's manifest cannot be trusted (malformed, wrong key, or bad signature), supplied checkpoints are
+  reported as `NOT_APPLICABLE`, and the summary's manifest fields are `null`.
+- The retention evidence is taken from the verified chain loaded in the snapshot. A defensive `ValueError` (a `500`)
+  covers an applicable retention event without a readable cutoff, which a verified chain cannot contain.
+
+**Tests (234 new, 1436 in total):**
+
+- **Unit (185):**
+  - the export integrity module (132), including:
+    - the exact signing-input bytes;
+    - field, key, signature and structural failures;
+    - every tampering case and violation type;
+    - redaction and retention authorization;
+    - retention evidence and checkpoint anchoring;
+    - two Hypothesis properties: any export of any interleaving of appends, redactions and retention verifies, and
+      any mutation fails;
+  - request validation (19);
+  - the offline `export` CLI (16);
+  - settings (15);
+  - import boundaries (2, in fresh interpreters);
+  - OpenAPI (1).
+- **API integration against real PostgreSQL (49):**
+  - check order and roles;
+  - scope and body validation;
+  - each scope;
+  - exact canonical bytes and headers;
+  - empty result and empty chain;
+  - export event identity, payload and sequence, including its exclusion from its own export and inclusion in later
+    ones;
+  - redacted, archived and mid-purge records;
+  - `409` for modification, middle deletion, reordering, a deleted value, and checkpoint truncation or rewrite, with
+    nothing appended;
+  - `500` for an invalid store;
+  - the record and byte limits;
+  - `503` for a failed append and for a lock timeout, with no bundle;
+  - concurrent append, redaction and retention during the snapshot;
+  - the offline CLI end to end with real checkpoints;
+  - log contents.
+
+**Documentation updates:**
+
+- `requirements.md`: the FR-7 API definition, the FR-4 verifier note, the label rule, and §13.
+- `architecture.md`: §5, §13, and §21.
+- ADR-0002 (the label), ADR-0006 (L-D1 implemented), ADR-0007 (the implementation section), and ADR-0008 (the
+  environment variables).
+- `README.md`.
+
+**Limitations:**
+
+- Recipients trust the export public key they are given; key rotation and distribution remain deferred.
+- Completeness is attested by the signature, not provable from hashes.
+- A supplied checkpoint anchors only at `asOfSequence` or an included record (L-D1).
+- Pre-signing verification loads the whole chain for every export.
+- No performance measurements yet (NFR-3).
+- The `httpx2` warning remains.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container
+(localhost only, no password, removed afterwards):
+
+- `pytest --cov` reported 1436 passed (1040 unit, 395 integration, and 1 package test), with 100% statement and
+  branch coverage and no exclusions.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Sign-off:** I gave the Phase 11 decisions recorded above. My review and sign-off of the Phase 11 implementation are
+pending.

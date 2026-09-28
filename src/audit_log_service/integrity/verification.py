@@ -18,7 +18,7 @@ are not detectable.
 """
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -138,7 +138,7 @@ def verify_chain(
     )
     anchor_status, anchor_index = _compare_anchor(ordered, head, anchor)
 
-    authorized = _redaction_authorizations(ordered, checked)
+    authorized = redaction_authorizations(ordered, [v is None for v in checked])
     retained_up_to = _retention_coverage(ordered, checked)
     violation_count = 0
     first_violation: Violation | None = None
@@ -151,7 +151,7 @@ def verify_chain(
         if (
             not outranks_missing
             and record.sequence > retained_up_to
-            and _has_unauthorized_missing_value(entry, authorized)
+            and has_unauthorized_missing_value(entry, authorized)
         ):
             violation_type = ViolationType.PAYLOAD_VALUE_MISSING
         if violation_type is None and index == anchor_index:
@@ -203,18 +203,19 @@ _PRECEDENCE = list(ViolationType)
 _MISSING_RANK = _PRECEDENCE.index(ViolationType.PAYLOAD_VALUE_MISSING)
 
 
-def _redaction_authorizations(
-    entries: list[ChainEntry], checked: list[ViolationType | None]
+def redaction_authorizations(
+    entries: Sequence[ChainEntry], passed_checks: Sequence[bool]
 ) -> dict[tuple[str, str], int]:
     """Map (target record id, pointer) to the latest valid redaction event's sequence.
 
-    A redaction event authorizes only if it passed every check in pass 1 and none of its own
-    values is missing (a redaction event cannot itself be redacted).
+    A redaction event authorizes only if it passed every check in pass 1 (`passed_checks`) and
+    none of its own values is missing (a redaction event cannot itself be redacted). Shared with
+    export verification (FR-7).
     """
     authorized: dict[tuple[str, str], int] = {}
-    for entry, violation_type in zip(entries, checked, strict=True):
+    for entry, passed in zip(entries, passed_checks, strict=True):
         record = entry.record
-        if violation_type is not None or record.content.event_type != REDACTION_EVENT_TYPE:
+        if not passed or record.content.event_type != REDACTION_EVENT_TYPE:
             continue
         redaction = _redaction_payload(entry)
         if redaction is None:
@@ -260,9 +261,10 @@ def _redaction_payload(entry: ChainEntry) -> tuple[str, list[str]] | None:
     return target_id, cast(list[str], paths)
 
 
-def _has_unauthorized_missing_value(
-    entry: ChainEntry, authorized: dict[tuple[str, str], int]
+def has_unauthorized_missing_value(
+    entry: ChainEntry, authorized: Mapping[tuple[str, str], int]
 ) -> bool:
+    """Whether a value is missing without a later authorizing redaction event."""
     record = entry.record
     return any(
         authorized.get((record.content.id, pointer), 0) <= record.sequence
@@ -286,18 +288,19 @@ def _first_violation(
             return ViolationType.GENESIS_MISMATCH
     elif not is_sha256_hex(record.previous_hash) or record.previous_hash != predecessor.record_hash:
         return ViolationType.PREVIOUS_HASH_MISMATCH
-    if not _content_hash_matches(record):
+    if not content_hash_matches(record):
         return ViolationType.CONTENT_HASH_MISMATCH
     if not values_open_commitments(record.content.payload, entry.payload_values):
         return ViolationType.PAYLOAD_VALUE_MISMATCH
-    if not _record_hash_matches(record):
+    if not record_hash_matches(record):
         return ViolationType.RECORD_HASH_MISMATCH
     if predecessor is not None and _recorded_at_regressed(record, predecessor):
         return ViolationType.RECORDED_AT_REGRESSION
     return None
 
 
-def _content_hash_matches(record: AuditRecord) -> bool:
+def content_hash_matches(record: AuditRecord) -> bool:
+    """Whether `contentHash` is well formed and matches the content. Shared with exports."""
     if not is_sha256_hex(record.content_hash):
         return False
     try:
@@ -308,7 +311,8 @@ def _content_hash_matches(record: AuditRecord) -> bool:
         return False
 
 
-def _record_hash_matches(record: AuditRecord) -> bool:
+def record_hash_matches(record: AuditRecord) -> bool:
+    """Whether `recordHash` is well formed and matches its inputs. Shared with exports."""
     if not is_sha256_hex(record.record_hash):
         return False
     try:

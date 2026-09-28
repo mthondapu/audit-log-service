@@ -7,8 +7,10 @@ import json
 import os
 import subprocess  # nosec B404 - runs this project's own modules with the test interpreter
 import sys
+from collections.abc import Callable
 from importlib.metadata import entry_points
 from pathlib import Path
+from typing import cast
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -35,8 +37,12 @@ OFFLINE_MODULES = {
     "audit_log_service.integrity",
     "audit_log_service.integrity.canonical",
     "audit_log_service.integrity.checkpoints",
+    "audit_log_service.integrity.commitments",
     "audit_log_service.integrity.errors",
+    "audit_log_service.integrity.exports",
+    "audit_log_service.integrity.hashing",
     "audit_log_service.integrity.timestamps",
+    "audit_log_service.integrity.verification",
 }
 
 
@@ -109,3 +115,39 @@ def test_console_scripts_are_declared() -> None:
         "audit-log-checkpoint": "audit_log_service.cli.checkpoint:main",
         "audit-log-verify": "audit_log_service.offline.verify:main",
     }
+
+
+def test_offline_export_verification_runs_without_service_modules_or_configuration(
+    tmp_path: Path,
+    write_export_bundle: Callable[[Ed25519PrivateKey], tuple[Path, list[str]]],
+    export_key: Ed25519PrivateKey,
+    export_public_key_file: Path,
+) -> None:
+    bundle, _ = write_export_bundle(export_key)
+    code = f"""
+import io, json, sys
+from audit_log_service.offline.verify import run
+out, err = io.StringIO(), io.StringIO()
+exit_code = run(["export", "--public-key", {str(export_public_key_file)!r}, {str(bundle)!r}],
+                stdout=out, stderr=err)
+print(json.dumps({{"exit": exit_code, "out": out.getvalue(), "modules": sorted(sys.modules)}}))
+"""
+    result = _run_python(code, tmp_path)
+
+    assert result["exit"] == 0
+    assert json.loads(str(result["out"]))["result"] == "VALID"
+    modules = {str(name) for name in result["modules"]}  # type: ignore[union-attr]
+    assert not {m for m in modules if m.split(".")[0] in SERVICE_LIBRARIES}
+    assert {m for m in modules if m.split(".")[0] == "audit_log_service"} <= OFFLINE_MODULES
+
+
+def test_integrity_package_has_no_service_dependency(tmp_path: Path) -> None:
+    code = """
+import json, sys
+import audit_log_service.integrity.exports
+print(json.dumps({"modules": sorted(sys.modules)}))
+"""
+    loaded = _run_python(code, tmp_path)["modules"]
+    assert isinstance(loaded, list)
+    modules = {str(name) for name in cast(list[object], loaded)}
+    assert not {m for m in modules if m.split(".")[0] in SERVICE_LIBRARIES}

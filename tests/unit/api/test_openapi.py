@@ -81,6 +81,7 @@ def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any])
         ("/audit/verify", "get"),
         ("/audit/events/{id}/redactions", "post"),
         ("/audit/retention-runs", "post"),
+        ("/audit/exports", "post"),
     }
 
 
@@ -285,3 +286,31 @@ def test_operations_require_bearer_authentication(openapi: dict[str, Any]) -> No
     for methods in openapi["paths"].values():
         for operation in methods.values():
             assert operation["security"] == [{"bearerAuth": []}]
+
+
+def test_export_documents_its_body_statuses_and_bundle(openapi: dict[str, Any]) -> None:
+    export = openapi["paths"]["/audit/exports"]["post"]
+
+    assert export["requestBody"]["content"] == {
+        "application/json": {"schema": {"$ref": "#/components/schemas/ExportRequest"}}
+    }
+    assert set(export["responses"]) == {
+        "200",
+        "400",
+        "401",
+        "403",
+        "409",
+        "413",
+        "415",
+        "422",
+        "500",
+        "503",
+    }
+    assert _problem_codes(export["responses"]) == set(export["responses"]) - {"200"}
+    assert export["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ExportBundle"
+    }
+    schemas = openapi["components"]["schemas"]
+    assert set(schemas["ExportRequest"]["properties"]) == {"actorId", "resourceId", "resourceType"}
+    assert schemas["ExportRequest"]["additionalProperties"] is False
+    assert set(schemas["ExportBundle"]["properties"]) == {"manifest", "signature", "records"}

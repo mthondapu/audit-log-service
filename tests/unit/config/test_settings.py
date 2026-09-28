@@ -8,7 +8,12 @@ from typing import cast
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 
 from audit_log_service.config.errors import ConfigurationError
 from audit_log_service.config.settings import (
@@ -18,6 +23,9 @@ from audit_log_service.config.settings import (
     CHECKPOINT_SIGNING_KEY_FILE_VARIABLE,
     CHECKPOINT_STORE_DIR_VARIABLE,
     DATABASE_URL_VARIABLE,
+    EXPORT_MAX_BYTES_VARIABLE,
+    EXPORT_MAX_RECORDS_VARIABLE,
+    EXPORT_SIGNING_KEY_FILE_VARIABLE,
     RETENTION_BATCH_SIZE_VARIABLE,
     RETENTION_MAX_BATCHES_VARIABLE,
     RETENTION_WINDOW_VARIABLE,
@@ -26,6 +34,7 @@ from audit_log_service.config.settings import (
     load_checkpoint_cli_settings,
     load_settings,
 )
+from audit_log_service.integrity.checkpoints import key_id
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 DATABASE_URL = "postgresql+psycopg://audit_app:test-only-password@127.0.0.1/audit_log"
@@ -284,3 +293,102 @@ def test_checkpoint_cli_settings_do_not_read_the_signing_key(
     # The key is read only after the operator is authorized (CP3), so its content is not checked.
     checkpoint_signing_key_file.write_bytes(b"not a key")
     load_checkpoint_cli_settings(cli_environ)
+
+
+def _export_key_file(
+    tmp_path: Path, key: Ed25519PrivateKey | None = None
+) -> tuple[Path, Ed25519PrivateKey]:
+    key = key or Ed25519PrivateKey.generate()
+    path = tmp_path / "export-signing.pem"
+    path.write_bytes(key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+    return path, key
+
+
+def test_exports_default_to_no_key_and_the_default_limits(environ: dict[str, str]) -> None:
+    settings = load_settings(environ)
+    assert settings.export_signing_key is None
+    assert (settings.export_max_records, settings.export_max_bytes) == (1_000, 64 * 1024 * 1024)
+
+
+def test_export_signing_key_is_loaded_at_startup(environ: dict[str, str], tmp_path: Path) -> None:
+    path, key = _export_key_file(tmp_path)
+    environ[EXPORT_SIGNING_KEY_FILE_VARIABLE] = str(path)
+
+    settings = load_settings(environ)
+
+    assert settings.export_signing_key is not None
+    assert key_id(settings.export_signing_key.public_key()) == key_id(key.public_key())
+    assert "PRIVATE" not in repr(settings) and "Ed25519" not in repr(settings)
+
+
+@pytest.mark.parametrize("problem", ["missing", "not-a-key", "public-key", "directory"])
+def test_invalid_export_signing_key_fails_fast(
+    environ: dict[str, str], tmp_path: Path, checkpoint_public_key_file: Path, problem: str
+) -> None:
+    path = {
+        "missing": tmp_path / "missing.pem",
+        "not-a-key": tmp_path / "not-a-key.pem",
+        "public-key": checkpoint_public_key_file,
+        "directory": tmp_path,
+    }[problem]
+    if problem == "not-a-key":
+        path.write_bytes(b"test-only-not-a-key")
+    environ[EXPORT_SIGNING_KEY_FILE_VARIABLE] = str(path)
+
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(environ)
+
+    assert str(caught.value) == (
+        f"{EXPORT_SIGNING_KEY_FILE_VARIABLE} must name a readable, unencrypted Ed25519 private "
+        "key in PKCS#8 PEM form"
+    )
+    assert "test-only-not-a-key" not in str(caught.value)
+
+
+def test_blank_export_signing_key_setting_fails_fast(environ: dict[str, str]) -> None:
+    environ[EXPORT_SIGNING_KEY_FILE_VARIABLE] = "  "
+    with pytest.raises(
+        ConfigurationError, match=f"^{EXPORT_SIGNING_KEY_FILE_VARIABLE} must be set$"
+    ):
+        load_settings(environ)
+
+
+def test_checkpoint_key_pair_is_refused_as_the_export_key(
+    environ: dict[str, str], checkpoint_signing_key_file: Path
+) -> None:
+    # The trusted checkpoint public key belongs to this private key (E7).
+    environ[EXPORT_SIGNING_KEY_FILE_VARIABLE] = str(checkpoint_signing_key_file)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(environ)
+    assert str(caught.value) == (
+        f"{EXPORT_SIGNING_KEY_FILE_VARIABLE} must not be the checkpoint key pair; exports and "
+        "checkpoints use separate keys"
+    )
+
+
+def test_export_limits_are_read(environ: dict[str, str]) -> None:
+    environ[EXPORT_MAX_RECORDS_VARIABLE] = "10000"
+    environ[EXPORT_MAX_BYTES_VARIABLE] = str(1024**3)
+    settings = load_settings(environ)
+    assert (settings.export_max_records, settings.export_max_bytes) == (10_000, 1024**3)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "maximum"),
+    [
+        (EXPORT_MAX_RECORDS_VARIABLE, "0", 10_000),
+        (EXPORT_MAX_RECORDS_VARIABLE, "10001", 10_000),
+        (EXPORT_MAX_RECORDS_VARIABLE, "many", 10_000),
+        (EXPORT_MAX_BYTES_VARIABLE, "0", 1024**3),
+        (EXPORT_MAX_BYTES_VARIABLE, str(1024**3 + 1), 1024**3),
+        (EXPORT_MAX_BYTES_VARIABLE, "1.5", 1024**3),
+    ],
+)
+def test_invalid_export_limits_fail_fast(
+    environ: dict[str, str], variable: str, value: str, maximum: int
+) -> None:
+    environ[variable] = value
+    with pytest.raises(
+        ConfigurationError, match=f"^{variable} must be a whole number from 1 to {maximum}$"
+    ):
+        load_settings(environ)

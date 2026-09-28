@@ -10,6 +10,11 @@
 - AUDIT_LOG_CHECKPOINT_STORE_DIR: the checkpoint store directory (FR-4); required.
 - AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE: the trusted checkpoint public key, Ed25519
   SubjectPublicKeyInfo PEM; required. The service never holds the private key (decision CP8).
+- AUDIT_LOG_EXPORT_SIGNING_KEY_FILE: the export signing key, an unencrypted Ed25519 PKCS#8 PEM
+  private key (FR-7); optional. When unset, exports are refused with 503 (E6). It must not be the
+  checkpoint key: its public key may not equal the trusted checkpoint public key (E7).
+- AUDIT_LOG_EXPORT_MAX_RECORDS: records per export; default 1,000, at most 10,000 (E8).
+- AUDIT_LOG_EXPORT_MAX_BYTES: bytes per serialized bundle; default 64 MiB, at most 1 GiB (E8).
 
 The checkpoint CLI has its own settings (`load_checkpoint_cli_settings`, decisions CP3 and CP4):
 AUDIT_LOG_CHECKPOINT_DATABASE_URL (a login in `audit_log_checkpoint`), AUDIT_LOG_API_KEYS_FILE,
@@ -25,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from audit_log_service.config.api_keys import ApiKeyConfiguration, load_api_key_configuration
 from audit_log_service.config.errors import ConfigurationError
@@ -33,7 +38,13 @@ from audit_log_service.config.vocabulary import (
     ClientAccountVocabulary,
     load_client_account_vocabulary,
 )
-from audit_log_service.integrity.checkpoints import KeyFormatError, load_public_key
+from audit_log_service.integrity.checkpoints import (
+    KeyFormatError,
+    key_id,
+    load_private_key,
+    load_public_key,
+)
+from audit_log_service.integrity.exports import MAX_BUNDLE_BYTES
 
 DATABASE_URL_VARIABLE = "AUDIT_LOG_DATABASE_URL"
 API_KEYS_FILE_VARIABLE = "AUDIT_LOG_API_KEYS_FILE"
@@ -52,6 +63,13 @@ CHECKPOINT_STORE_DIR_VARIABLE = "AUDIT_LOG_CHECKPOINT_STORE_DIR"
 CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE = "AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE"
 CHECKPOINT_DATABASE_URL_VARIABLE = "AUDIT_LOG_CHECKPOINT_DATABASE_URL"
 CHECKPOINT_SIGNING_KEY_FILE_VARIABLE = "AUDIT_LOG_CHECKPOINT_SIGNING_KEY_FILE"
+EXPORT_SIGNING_KEY_FILE_VARIABLE = "AUDIT_LOG_EXPORT_SIGNING_KEY_FILE"
+EXPORT_MAX_RECORDS_VARIABLE = "AUDIT_LOG_EXPORT_MAX_RECORDS"
+EXPORT_MAX_BYTES_VARIABLE = "AUDIT_LOG_EXPORT_MAX_BYTES"
+DEFAULT_EXPORT_MAX_RECORDS = 1_000
+MAX_EXPORT_RECORDS = 10_000
+DEFAULT_EXPORT_MAX_BYTES = 64 * 1024 * 1024
+MAX_EXPORT_BYTES = MAX_BUNDLE_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +85,14 @@ class Settings:
     retention_window: timedelta | None = None
     retention_batch_size: int = DEFAULT_RETENTION_BATCH_SIZE
     retention_max_batches: int = DEFAULT_RETENTION_MAX_BATCHES
+    export_signing_key: Ed25519PrivateKey | None = field(default=None, repr=False)
+    export_max_records: int = DEFAULT_EXPORT_MAX_RECORDS
+    export_max_bytes: int = DEFAULT_EXPORT_MAX_BYTES
 
 
 def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
     """Read and validate every setting, raising `ConfigurationError` on the first problem."""
+    checkpoint_public_key = _public_key(environ, CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE)
     return Settings(
         database_url=_required(environ, DATABASE_URL_VARIABLE),
         api_keys=load_api_key_configuration(Path(_required(environ, API_KEYS_FILE_VARIABLE))),
@@ -79,7 +101,7 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
         ),
         timestamp_skew=_timestamp_skew(environ),
         checkpoint_store_dir=_directory(environ, CHECKPOINT_STORE_DIR_VARIABLE),
-        checkpoint_public_key=_public_key(environ, CHECKPOINT_PUBLIC_KEY_FILE_VARIABLE),
+        checkpoint_public_key=checkpoint_public_key,
         retention_window=_retention_window(environ),
         retention_batch_size=_bounded_integer(
             environ,
@@ -92,6 +114,13 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
             RETENTION_MAX_BATCHES_VARIABLE,
             DEFAULT_RETENTION_MAX_BATCHES,
             MAX_RETENTION_BATCHES,
+        ),
+        export_signing_key=_export_signing_key(environ, checkpoint_public_key),
+        export_max_records=_bounded_integer(
+            environ, EXPORT_MAX_RECORDS_VARIABLE, DEFAULT_EXPORT_MAX_RECORDS, MAX_EXPORT_RECORDS
+        ),
+        export_max_bytes=_bounded_integer(
+            environ, EXPORT_MAX_BYTES_VARIABLE, DEFAULT_EXPORT_MAX_BYTES, MAX_EXPORT_BYTES
         ),
     )
 
@@ -175,3 +204,26 @@ def _public_key(environ: Mapping[str, str], name: str) -> Ed25519PublicKey:
         raise ConfigurationError(
             f"{name} must name a readable Ed25519 public key in SubjectPublicKeyInfo PEM form"
         ) from None
+
+
+def _export_signing_key(
+    environ: Mapping[str, str], checkpoint_public_key: Ed25519PublicKey
+) -> Ed25519PrivateKey | None:
+    """Load the optional export key (E6), refusing the checkpoint key pair (E7)."""
+    if environ.get(EXPORT_SIGNING_KEY_FILE_VARIABLE) is None:
+        return None
+    try:
+        key = load_private_key(
+            Path(_required(environ, EXPORT_SIGNING_KEY_FILE_VARIABLE)).read_bytes()
+        )
+    except (OSError, KeyFormatError):
+        raise ConfigurationError(
+            f"{EXPORT_SIGNING_KEY_FILE_VARIABLE} must name a readable, unencrypted Ed25519 private "
+            "key in PKCS#8 PEM form"
+        ) from None
+    if key_id(key.public_key()) == key_id(checkpoint_public_key):
+        raise ConfigurationError(
+            f"{EXPORT_SIGNING_KEY_FILE_VARIABLE} must not be the checkpoint key pair; exports and "
+            "checkpoints use separate keys"
+        )
+    return key

@@ -42,6 +42,8 @@ An export contains only the records in its scope, together with `asOfSequence` a
 
 Exports do not gain intervening chain-link evidence, and no request parameter selects a checkpoint or range.
 
+Implemented in Phase 11 by `audit-log-verify export --checkpoint-public-key ... --checkpoint ...`, which reports each supplied checkpoint as `MATCH`, `MISMATCH`, `NOT_APPLICABLE`, or `INVALID` (never used). A mismatching or invalid checkpoint makes the result invalid; a checkpoint that cannot be anchored does not (requirements FR-7). Exports read the checkpoint store only for pre-signing verification and never create or update a checkpoint.
+
 **Rationale:** this keeps the export scope and size unchanged and discloses nothing about out-of-scope records. It uses only evidence the signed manifest already provides.
 
 ## Consequences
@@ -57,7 +59,7 @@ Exports do not gain intervening chain-link evidence, and no request parameter se
 
 Decided by the developer on 2026-09-28 (decisions CP1 to CP16). The full contract is in requirements FR-4.
 
-- **Commands.** `audit-log-checkpoint create` creates checkpoints; `audit-log-verify checkpoint --public-key <spki.pem> <artifact>...` verifies artifacts offline. The offline verifier imports only the integrity library and needs no service, database, or configuration; export bundles are added with FR-7.
+- **Commands.** `audit-log-checkpoint create` creates checkpoints; `audit-log-verify checkpoint --public-key <spki.pem> <artifact>...` verifies artifacts offline. The offline verifier imports only the integrity library and needs no service, database, or configuration; export bundles are verified by `audit-log-verify export` since Phase 11 (FR-7).
 - **Operator credential.** The raw API key is read from stdin (without echo on a terminal), never from arguments or environment variables, and checked against the service's API-key configuration by the same digest comparison (`authenticate_api_key`). `checkpoint:create` is required before the signing key is read or the database is contacted.
 - **Trust boundary of that check.** The capability check attributes each checkpoint to an operator (the signed `createdBy`) and keeps the tool from other API principals. It is not a cryptographic control: anyone who can read the signing key can sign without the CLI. File-system access to the signing key is the actual signing boundary.
 - **Database access.** A read-only role, `audit_log_checkpoint` (ADR-0009). Creating a checkpoint appends nothing to the chain.

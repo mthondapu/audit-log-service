@@ -5,7 +5,8 @@ numeric domain (requirements FR-1): every number, whatever its notation, must be
 +/-(2^53 - 1), evaluated as the IEEE-754 double. RFC 8785 itself does not impose that bound.
 
 Every hash input is ``UTF-8(label) || 0x00 || RFC8785(object)``, hashed with SHA-256 and written as
-lowercase hexadecimal. A signed checkpoint signs the same labeled input directly (FR-4).
+lowercase hexadecimal. Signed checkpoints (FR-4) and export manifests (FR-7) sign the same labeled
+input directly.
 """
 
 import hashlib
@@ -22,6 +23,7 @@ CONTENT_LABEL = "audit-log/v1/content"
 RECORD_LABEL = "audit-log/v1/record"
 COMMITMENT_LABEL = "audit-log/v1/commitment"
 CHECKPOINT_LABEL = "audit-log/v1/checkpoint"
+MANIFEST_LABEL = "audit-log/v1/manifest"
 
 MAX_SAFE_INTEGER = 2**53 - 1
 _LABEL_SEPARATOR = b"\x00"

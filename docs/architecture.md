@@ -87,9 +87,9 @@ Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, N
 
 Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 
-**Implemented so far (Phases 5–9):** `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, and `POST /audit/retention-runs`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
+**Implemented so far (Phases 5–11):** `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, `POST /audit/retention-runs`, and `POST /audit/exports`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
 
-**Command-line programs (Phase 10):** `audit-log-checkpoint create` (the checkpoint CLI) and `audit-log-verify checkpoint` (the offline verifier, checkpoint artifacts only until exports exist). See Section 12 and requirements FR-4.
+**Command-line programs (Phases 10 and 11):** `audit-log-checkpoint create` (the checkpoint CLI) and `audit-log-verify` (the offline verifier: `checkpoint` for checkpoint artifacts, `export` for export bundles). There is no export-creation CLI. See Section 12 and requirements FR-4.
 
 ## 6. Authentication and authorization
 
@@ -216,7 +216,14 @@ The **offline verifier** runs in the recipient's environment without the service
 
 A supplied checkpoint therefore does not establish a trusted boundary for every export. Exports do not carry intervening chain-link evidence to bridge arbitrary recipient checkpoints. Where a checkpoint cannot be anchored, assurance rests on the service's pre-signing verification (which includes checks against the service's own checkpoint store) and on the export signature.
 
-The exact manifest schema and retention-evidence representation are implementation and documentation details, constrained by the rule that the evidence must remain inside the signed manifest.
+**Implementation (Phase 11).** The request, bundle, manifest, retention evidence, export event, limits, and verifier output are recorded in requirements FR-7 (API definition). In brief:
+
+- the check order is authenticate, authorize, validate the body, confirm the export key is configured (`503` otherwise), then touch the store and the database;
+- the checkpoint store is read before the snapshot; the record limit is checked in the snapshot before verification, and the byte limit after serialization, before the export event;
+- the manifest is signed as `UTF-8("audit-log/v1/manifest") || 0x00 || RFC8785(manifest)` with the export key, which is separate from the checkpoint key and refused at startup if it is the checkpoint key pair;
+- records carry `committedPayload` and `payloadValues` (`{value, salt}` by JSON Pointer); archived records carry no values, and the signed `retention` evidence authorizes their missing values;
+- the `AUDIT_LOG_EXPORT` event is appended only after signing, in its own transaction under the append lock; a failure returns `503` and no bundle; and
+- the verification code (`integrity/exports.py`) has no web, database, or configuration dependency and is shared by the offline verifier.
 
 ## 14. Database privilege boundaries
 
@@ -301,8 +308,6 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 ## 21. Deferred implementation details
 
 - Production key lifecycle, storage, and distribution.
-- Exact manifest schema and retention-evidence representation (inside the signed manifest).
-- Export audit event payload fields.
 - Access-event vocabulary names.
 - Configuration file paths and the demo-key generation mechanism. The configuration format and validation, and the environment-variable names, are decided in ADR-0008 (D3).
 - Tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).

@@ -38,12 +38,15 @@ The service reads its configuration from the environment once, at startup, and r
 | `AUDIT_LOG_RETENTION_MAX_BATCHES` | Optional; batches per retention run before it stops with `503` and leaves the rest for the next run (default 20) |
 | `AUDIT_LOG_CHECKPOINT_STORE_DIR` | The checkpoint store directory, outside the database; the service only reads it |
 | `AUDIT_LOG_CHECKPOINT_PUBLIC_KEY_FILE` | The trusted checkpoint public key (Ed25519, SubjectPublicKeyInfo PEM). The service never holds the private key |
+| `AUDIT_LOG_EXPORT_SIGNING_KEY_FILE` | Optional; the export signing key (unencrypted Ed25519 PKCS#8 PEM), separate from the checkpoint key. Without it, exports return `503` |
+| `AUDIT_LOG_EXPORT_MAX_RECORDS` | Optional; records per export (default 1,000, at most 10,000) |
+| `AUDIT_LOG_EXPORT_MAX_BYTES` | Optional; bytes per export bundle (default 64 MiB, at most 1 GiB) |
 
 ```sh
 uv run uvicorn audit_log_service.api.app:create_app --factory
 ```
 
-Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, and `POST /audit/retention-runs`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, `POST /audit/retention-runs`, and `POST /audit/exports`. The OpenAPI document is served at `/openapi.json` and `/docs`.
 
 ## Checkpoints
 
@@ -81,6 +84,27 @@ uv run audit-log-verify checkpoint --public-key checkpoint-public.pem checkpoint
 ```
 
 Deploy the store so that the service can only read it and the database cannot reach it; a database superuser can write files on the database host (ADR-0009).
+
+## Exports
+
+Auditors and regulators (`export:create`) export every record matching exactly one scope, `{"actorId"}`, `{"resourceId"}`, or `{"resourceId", "resourceType"}`, as a signed bundle (requirements FR-7):
+
+```sh
+curl -s -X POST http://127.0.0.1:8000/audit/exports \
+  -H "Authorization: Bearer $AUDITOR_KEY" -H "Content-Type: application/json" \
+  -d '{"resourceId": "acct-42", "resourceType": "CLIENT_ACCOUNT"}' > export.json
+```
+
+The bundle contains payload values and their salts: handle it as sensitive data. The service verifies the whole chain before signing and refuses (`409`) while it is broken. Each export is recorded as an `AUDIT_LOG_EXPORT` event.
+
+Generate the export key pair like the checkpoint key pair, but as a separate key, and give recipients the public key out of band. Anyone with it can verify a bundle without the service or database, optionally anchoring checkpoints to it:
+
+```sh
+uv run audit-log-verify export --public-key export-public.pem export.json \
+  --checkpoint-public-key checkpoint-public.pem --checkpoint checkpoint-00000000000000000042.json
+```
+
+The verifier prints a summary line and one line per checkpoint (`MATCH`, `MISMATCH`, `NOT_APPLICABLE`, or `INVALID`), and exits 0 when everything is valid, 1 otherwise, and 2 on a usage error. It never prints payload values.
 
 ## Redaction guidance for operators
 

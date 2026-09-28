@@ -1,6 +1,6 @@
 # ADR-0007: Signed exports
 
-- **Status:** Accepted (manifest schema and retention-evidence representation deferred; Ed25519 approved in principle; the `cryptography` dependency gate passed, see ADR-0006)
+- **Status:** Accepted; implemented in Phase 11 (production key lifecycle deferred; the `cryptography` dependency gate passed, see ADR-0006)
 - **Date:** 2026-09-28
 - **Decision owner:** Developer (Focused Discussions #3 and #4, decisions E1–E10, N8–N14, S18–S22, S24; AD-7, RB-3, L-D1)
 
@@ -34,11 +34,24 @@ An export of all records for an `actorId` or `resourceId` must be self-contained
 - A broken chain blocks all exports.
 - Exports disclose values and salts for unredacted values and must never be logged.
 
+## Implementation (Phase 11)
+
+Decided by the developer on 2026-09-28 (Phase 11 decisions E1 to E17, distinct from the Focused Discussion #3 decisions above). The full contract is in requirements FR-7 (API definition).
+
+- **Manifest (E1, E2).** `format` `audit-log-export/v1`, `scheme`, `scope`, `asOfSequence`, `asOfRecordHash`, `generatedAt`, a fixed `completeness` statement, `requestedBy`, `recordCount`, `records` (`sequence`, `id`, `recordHash`), `retention`, and `keyId`, signed with Ed25519 over `UTF-8("audit-log/v1/manifest") || 0x00 || RFC8785(manifest)`. The bundle is `{manifest, signature, records}`.
+- **Records (E3).** Hash inputs plus `committedPayload` and `payloadValues` (`{value, salt}` by JSON Pointer). Redacted values are absent; archived records carry no values. No second rendered payload.
+- **Retention evidence (E4).** `null` or `{upToSequence, cutoff, eventSequence, eventId, eventRecordHash}` of the latest applicable retention event, inside the signed manifest.
+- **Empty chain (E5).** `asOfSequence` `0` and `asOfRecordHash` `null`.
+- **Keys (E6, E7).** `AUDIT_LOG_EXPORT_SIGNING_KEY_FILE` is optional and validated at startup; when unset, exports return `503`. It is refused if it is the checkpoint key pair.
+- **Limits (E8).** At most `AUDIT_LOG_EXPORT_MAX_RECORDS` records (checked in the snapshot before verification) and `AUDIT_LOG_EXPORT_MAX_BYTES` bytes (checked after serialization, before the export event); both `422`.
+- **Export event (E9).** `AUDIT_LOG_EXPORT`, with identity from the scope and fixed server values otherwise, and payload `{scope, asOfSequence, recordCount, keyId, manifestSignature}`.
+- **Failures (E10, E11).** A failed pre-signing verification is `409` with a fixed detail and no violation details; an invalid checkpoint store is `500`.
+- **Offline verifier (E12 to E15).** Strict parsing, key and signature first, then the list, order, scope, `asOfSequence`, links, hashes, commitments, and missing-value authorization, with the approved violation types and exit codes; checkpoints per L-D1, an invalid checkpoint making the result invalid.
+- **Validation and handling (E16, E17).** Scope fields use the FR-2 rules; responses use `Cache-Control: no-store`; logs never contain scope identifiers, values, salts, keys, or the manifest.
+
 ## Deferred
 
-- Exact manifest schema and retention-evidence field structure, constrained to remain inside the signed manifest.
-- Export audit event payload fields.
-- Production key lifecycle, storage, and distribution.
+- Production key lifecycle, storage, and distribution, including export key rotation (the verifier trusts the public key it is given).
 
 ## Alternatives considered
 

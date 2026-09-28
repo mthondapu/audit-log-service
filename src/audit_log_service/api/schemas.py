@@ -176,3 +176,17 @@ def represent_retention(result: RetentionResult) -> dict[str, Any]:
         "retentionEvent": None if event is None else represent(event),
         "purgedValues": result.purged_values,
     }
+
+
+class ExportBundle(BaseModel):
+    """A signed export bundle (FR-7). Documentation only: the response is the exact signed bytes.
+
+    `manifest` is the signed manifest, `signature` its Ed25519 signature in lowercase hex, and
+    `records` the exported records with their hash inputs, in ascending `sequence` order.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: dict[str, Any]
+    signature: str
+    records: list[dict[str, Any]]

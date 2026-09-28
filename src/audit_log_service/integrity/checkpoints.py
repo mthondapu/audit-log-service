@@ -43,7 +43,7 @@ MAX_ARTIFACT_BYTES = 64 * 1024
 _SIGNATURE_HEX = re.compile(r"[0-9a-f]{128}")
 # The principal-id rule of the API-key configuration (ADR-0008), repeated here because this module
 # must not depend on configuration code.
-_PRINCIPAL_ID = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+PRINCIPAL_ID = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 _ENVELOPE_KEYS = frozenset({"checkpoint", "signature"})
 _CHECKPOINT_KEYS = frozenset(
     {"scheme", "sequence", "recordHash", "createdAt", "createdBy", "keyId"}
@@ -160,7 +160,7 @@ def parse_artifact(data: bytes) -> SignedCheckpoint:
         and is_sha256_hex(content["recordHash"])
         and is_canonical_timestamp(content["createdAt"])
         and isinstance(content["createdBy"], str)
-        and _PRINCIPAL_ID.fullmatch(content["createdBy"]) is not None
+        and PRINCIPAL_ID.fullmatch(content["createdBy"]) is not None
         and is_sha256_hex(content["keyId"])
         and isinstance(signature, str)
         and _SIGNATURE_HEX.fullmatch(signature) is not None

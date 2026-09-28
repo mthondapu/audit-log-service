@@ -2,7 +2,7 @@
 
 The app uses the session's migrated test database through the `audit_log_app` role (see the parent
 conftest), fake API keys, the example Scenario C vocabulary, and an empty checkpoint store trusted
-with an ephemeral key.
+with an ephemeral key, and a separate ephemeral export signing key.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -31,6 +31,7 @@ def settings(
     api_key_configuration: ApiKeyConfiguration,
     checkpoint_store: Path,
     checkpoint_key: Ed25519PrivateKey,
+    export_key: Ed25519PrivateKey,
 ) -> Settings:
     return Settings(
         database_url="unused: the tests supply the engine",
@@ -41,6 +42,7 @@ def settings(
         timestamp_skew=timedelta(minutes=5),
         checkpoint_store_dir=checkpoint_store,
         checkpoint_public_key=checkpoint_key.public_key(),
+        export_signing_key=export_key,
     )
 
 

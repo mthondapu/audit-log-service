@@ -6,6 +6,7 @@ generated per test and written only under the test's temporary directory.
 """
 
 import hashlib
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -23,6 +24,17 @@ from cryptography.hazmat.primitives.serialization import (
 from fastapi.testclient import TestClient
 
 from audit_log_service.config.api_keys import ApiKeyConfiguration, load_api_key_configuration
+from audit_log_service.integrity.checkpoints import key_id
+from audit_log_service.integrity.commitments import commit_payload
+from audit_log_service.integrity.exports import (
+    ExportRecord,
+    Manifest,
+    ManifestRecord,
+    encode_bundle,
+    sign_manifest,
+)
+from audit_log_service.integrity.hashing import GENESIS_PREVIOUS_HASH, EventContent, seal_record
+from audit_log_service.integrity.verification import ChainEntry
 
 FAKE_KEYS: Mapping[str, str] = MappingProxyType(
     {
@@ -123,6 +135,74 @@ def checkpoint_signing_key_file(tmp_path: Path, checkpoint_key: Ed25519PrivateKe
     path = tmp_path / "checkpoint-signing.pem"
     path.write_bytes(private_key_pem(checkpoint_key))
     return path
+
+
+@pytest.fixture
+def export_key() -> Ed25519PrivateKey:
+    """An ephemeral export signing key, separate from the checkpoint key (E7)."""
+    return Ed25519PrivateKey.generate()
+
+
+@pytest.fixture
+def export_public_key_file(tmp_path: Path, export_key: Ed25519PrivateKey) -> Path:
+    path = tmp_path / "export-public.pem"
+    path.write_bytes(public_key_pem(export_key))
+    return path
+
+
+ExportBundleWriter = Callable[[Ed25519PrivateKey], tuple[Path, list[str]]]
+
+
+@pytest.fixture
+def write_export_bundle(tmp_path: Path) -> ExportBundleWriter:
+    """Write a signed three-record export of `{"actorId": "actor-a"}` (records 1 and 3).
+
+    Returns the bundle path and the record hashes of the whole chain, by position.
+    """
+
+    def write(key: Ed25519PrivateKey) -> tuple[Path, list[str]]:
+        chain: list[ChainEntry] = []
+        for sequence, actor in enumerate(("actor-a", "actor-b", "actor-a"), start=1):
+            committed = commit_payload({"card": "test-only-4111", "n": sequence})
+            content = EventContent(
+                id=str(uuid.UUID(int=sequence)),
+                event_type="ORDER_PLACED",
+                actor_id=actor,
+                resource_type="ORDER",
+                resource_id="order-1",
+                timestamp=None,
+                recorded_at=f"2026-01-01T00:00:0{sequence}.000000Z",
+                recorded_by="svc-writer",
+                payload=committed.structure,
+            )
+            previous = chain[-1].record.record_hash if chain else GENESIS_PREVIOUS_HASH
+            chain.append(ChainEntry(seal_record(content, sequence, previous), committed.values))
+        records = [
+            ExportRecord(entry=entry, archived=False, redacted_paths=())
+            for entry in chain
+            if entry.record.content.actor_id == "actor-a"
+        ]
+        manifest = Manifest(
+            scope={"actorId": "actor-a"},
+            as_of_sequence=3,
+            as_of_record_hash=chain[-1].record.record_hash,
+            generated_at="2026-09-28T12:00:00.000000Z",
+            requested_by="auditor-1",
+            record_count=len(records),
+            records=tuple(
+                ManifestRecord(
+                    r.entry.record.sequence, r.entry.record.content.id, r.entry.record.record_hash
+                )
+                for r in records
+            ),
+            retention=None,
+            key_id=key_id(key.public_key()),
+        )
+        path = tmp_path / "bundle.json"
+        path.write_bytes(encode_bundle(manifest, sign_manifest(key, manifest), records))
+        return path, [entry.record.record_hash for entry in chain]
+
+    return write
 
 
 def api_client(app: Any) -> httpx.Client:
