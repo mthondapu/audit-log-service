@@ -37,6 +37,7 @@ The audit APIs require authenticated callers with clearly separated privileges. 
 **API-key entries.**
 
 - Each principal has a non-secret principal ID and exactly **one approved prototype role**. The approved role-to-capability mapping above is authoritative; the file cannot list arbitrary capabilities.
+- Principal IDs match `^[a-z][a-z0-9._-]{0,63}$` (developer decision during Phase 1).
 - A principal may have one or more key hashes, to support rotation. Each hash is a lowercase hexadecimal SHA-256 digest.
 - Raw API keys must be machine-generated with at least 128 bits of entropy. This applies to the raw key, not to the SHA-256 digest.
 - Raw API keys are never persisted in PostgreSQL, Git, or logs.
@@ -70,7 +71,6 @@ Errors may identify the file, principal, and field, but never echo raw keys or h
 
 - exact environment-variable names and filesystem paths;
 - how the CLI is presented with the operator's credential;
-- the principal-ID pattern;
 - the Scenario C vocabulary names;
 - `.gitignore` details;
 - the demo-key generation mechanism.

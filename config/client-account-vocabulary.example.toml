@@ -1,0 +1,18 @@
+# Example Scenario C access-event vocabulary (requirements FR-8, SC-A1 to SC-A3).
+#
+# The event-type names and payload keys below are illustrative only; the vocabulary names are
+# still deferred. This file contains no secrets.
+
+resource_type = "CLIENT_ACCOUNT"
+
+[[event_types]]
+name = "CLIENT_ACCOUNT_VIEWED"
+required_payload_keys = ["purpose", "channel"]
+
+[[event_types]]
+name = "CLIENT_ACCOUNT_UPDATED"
+required_payload_keys = ["purpose", "channel", "fieldsAccessed"]
+
+[[event_types]]
+name = "CLIENT_ACCOUNT_ACCESS_DENIED"
+required_payload_keys = ["channel"]

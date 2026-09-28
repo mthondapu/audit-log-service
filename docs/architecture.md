@@ -94,6 +94,7 @@ See [ADR-0008](adr/0008-authentication-and-authorization.md).
 - **Credentials.** Callers present a static API key as a Bearer credential. The service hashes the presented key with SHA-256 and compares it with configured hashes in constant time. Raw keys are never stored or committed.
 - **Configuration.** A mounted TOML file outside the database, read with the standard library's `tomllib`, maps each principal to a non-secret principal ID, exactly one approved prototype role, and one or more lowercase hexadecimal SHA-256 key hashes (to support rotation). A database writer therefore cannot grant itself credentials.
   - The approved role-to-capability mapping is authoritative; the file cannot list arbitrary capabilities.
+  - Principal IDs match `^[a-z][a-z0-9._-]{0,63}$`.
   - Raw keys are machine-generated with at least 128 bits of entropy (applying to the raw key, not the digest) and are never stored in PostgreSQL, Git, or logs.
   - The service and CLI load the file once at startup, and changes require a restart. They fail fast on invalid configuration: missing or malformed file, unknown fields, duplicate principal IDs or key hashes, invalid hash format, unknown role, a principal with no keys, no principals, or an invalid principal ID.
   - Errors never echo raw keys or hash values.
@@ -225,6 +226,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 
 - Participating business systems report access to client account data through `POST /audit/events` (`events:write`), with `resourceType` `CLIENT_ACCOUNT`, `actorId` set to whoever accessed the account, and `recordedBy` identifying the reporting system.
 - Request validation applies the configured access-event vocabulary and required payload keys to public writes of `CLIENT_ACCOUNT` events only; reserved system events are exempt.
+- The vocabulary file (a separate TOML file, D3) has a minimal structure: a `resource_type` value, and one or more `event_types` entries, each with a `name` and a list of `required_payload_keys`. Names must be unique, and an entry's required keys must not repeat. The `resource_type` value, every event-type name, and every required payload key must be non-empty, must have no leading or trailing whitespace, and must contain no ASCII control characters (U+0000–U+001F, U+007F). The vocabulary names themselves remain deferred.
 - Regulators and auditors use the existing query, verification, and export capabilities. Exports are recorded as export audit events; queries are logged operationally.
 - Redacted values appear as `null` with `redactedPaths`.
 - Production concerns such as per-account regulator scoping remain outside the prototype.
@@ -290,7 +292,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 - Retention event resource identity; export audit event payload fields.
 - Commitment byte layout (to be documented for verifiers).
 - Reserved namespace prefix and access-event vocabulary names.
-- Exact environment-variable names and configuration file paths, the principal-ID pattern, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
+- Exact environment-variable names and configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism. The configuration format and validation are decided in ADR-0008 (D3).
 - Table and column names, exact database grants, limits, batch sizes, cursor encoding, advisory-lock key, and timeouts.
 - Dependency gates: RFC 8785 library adoption and `cryptography` approval, with outcomes recorded before the integrity and signing code is implemented.
 

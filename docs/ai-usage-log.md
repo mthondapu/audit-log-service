@@ -862,3 +862,112 @@ decisions or dependency gates.
 
 **Sign-off:** I reviewed the scaffold and gave the decisions above on 2026-09-28 at 15:08 UTC. My review of the
 final changes before committing is pending.
+
+### 2026-09-28 — Phase 1: configuration loading, authentication and authorization foundation
+
+**Date/Time:** 2026-09-28, from 15:21 UTC (from session timestamps: Phase 1 requested at 15:21; my answers to
+Claude's clarifying questions recorded at 15:23).
+
+**Activity:** Developer-led, AI-assisted implementation of the configuration-loading and security foundation, with
+unit tests. No database, API endpoints, or integrity functionality.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**What I asked:**
+
+- A TOML and Pydantic v2 configuration loader with fail-fast validation.
+- Bearer API-key authentication with constant-time comparison and a uniform `401`.
+- Capability-based authorization.
+- Problem Details for authentication and authorization failures.
+- Safe example configuration files, unit tests, and the validation suite.
+
+**Clarifications before coding.** Before writing code, Claude stopped and asked about one conflict and three open
+points. My answers:
+
+- My brief said `events:verify`, but the approved documents say `chain:verify`. I chose the documented
+  `chain:verify`.
+- The principal-ID pattern had been deferred. I chose `^[a-z][a-z0-9._-]{0,63}$`, now recorded in the
+  documentation.
+- I chose to include a minimal Scenario C vocabulary loader. Its structure is a `resource_type` plus `event_types`
+  entries, each with a `name` and `required_payload_keys`; the vocabulary names stay deferred.
+- Loaders take an explicit file path; environment-variable names stay deferred.
+
+**What the AI implemented:**
+
+- `security/capabilities.py`: the approved capabilities and the authoritative role-to-capability mapping.
+- `config/errors.py`, `config/toml_file.py`: fail-fast TOML reading with `tomllib`.
+  - Error messages never echo file content or configured values.
+  - Python 3.13's `TOMLDecodeError` has no line or column attributes, so the position is read from the parser
+    message's suffix.
+- `config/api_keys.py`: the API-key loader. It rejects:
+  - unknown fields, duplicate principals, and duplicate hashes (within or across principals);
+  - invalid hashes and unknown roles;
+  - principals without keys, no principals, and invalid principal IDs.
+
+  It produces immutable configured principals with digest bytes.
+- `config/vocabulary.py`: the minimal Scenario C vocabulary loader.
+- `security/authentication.py`: Bearer extraction.
+  - Exactly one Authorization header is accepted, the scheme is case-insensitive, and the header must have exactly
+    two parts.
+  - The presented key is hashed with SHA-256 and compared with every configured digest using
+    `hmac.compare_digest`, without stopping early.
+  - Every failure raises the same detail-free error.
+- `security/authorization.py`: `require_capability`, plus a helper that authenticates, then authorizes.
+- `problem_details.py`:
+  - a uniform `401` with `WWW-Authenticate: Bearer`, and a `403`;
+  - RFC 9457 bodies with `type` `about:blank`, fixed text, and an optional `requestId`.
+- Example files:
+  - `config/api-keys.example.toml`, whose placeholders intentionally fail validation;
+  - `config/client-account-vocabulary.example.toml`, with illustrative names.
+- Tests (101 new, 102 in total, including the existing smoke test):
+  - configuration validation, including checks that no secrets are echoed;
+  - authentication failure cases, multiple headers, and a constant-time comparison call count;
+  - a no-logging check;
+  - a Hypothesis property test;
+  - the full role-by-capability matrix, redaction restricted to administrators, and check order;
+  - the Problem Details structure;
+  - the behavior of the example files.
+
+**Documentation updates:** the principal-ID pattern recorded in `requirements.md` (NFR-2) and `architecture.md` §6
+and ADR-0008, and removed from the deferred lists in `requirements.md` §13, `architecture.md` §21 and ADR-0008. The
+vocabulary file structure recorded in `architecture.md` §16.
+
+**Deviations and issues:** none from the approved documents. The capability name follows the documents rather than
+my brief, as I chose. No dependencies were added.
+
+**Validation (performed by Claude, results as observed):**
+
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `pytest --cov` reported 102 passed, with 100% statement and branch coverage.
+- `bandit` found no issues.
+- `pip-audit` found no known vulnerabilities.
+- Both example files parse with `tomllib`.
+- `git diff --check` reported no whitespace errors.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Review fixes (requested 2026-09-28 at 15:35 UTC, from session timestamps).** After a review of the Phase 1
+implementation, I asked for these fixes only:
+
+- `ConfiguredPrincipal.key_digests` is excluded from the default `repr`, so printing a configuration never exposes
+  key hashes. The stored value and authentication behavior are unchanged.
+- Authorization parsing now accepts exactly `Bearer <token>`: one ASCII space, a case-insensitive scheme, and a
+  non-empty token with no whitespace. Tabs, repeated spaces, and leading or trailing whitespace are malformed. Every
+  failure still raises the same detail-free error. This replaces the earlier "exactly two parts" split.
+- The Hypothesis property test now runs against a non-empty configuration of obviously fake keys, built inside the
+  test, instead of an empty configuration.
+- `architecture.md` §16 now states the vocabulary name rules: non-empty, no leading or trailing whitespace, no ASCII
+  control characters.
+- **Note for the API phase:** the API layer must pass **all** received Authorization header values to
+  `authenticate` (for example, through a header API that returns every value as a list), so that rejecting multiple
+  Authorization headers stays enforceable.
+
+Validation after the fixes (performed by Claude, results as observed): `uv lock --check` and `uv sync --locked`
+succeeded; `ruff format --check` and `ruff check` passed; `pyright` (strict) reported 0 errors; `pytest --cov`
+reported 115 passed, with 100% statement and branch coverage; `bandit` found no issues; `pip-audit` found no known
+vulnerabilities; `git diff --check` reported no whitespace errors. No dependencies were added.
+
+**Sign-off:** I answered the four clarifying questions and requested the review fixes above. My review and sign-off
+of the Phase 1 implementation are pending.

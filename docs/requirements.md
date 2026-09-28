@@ -511,6 +511,7 @@ Authorization controls are developer-derived engineering requirements supporting
 **API-key configuration (design decision, D3):**
 
 - the API-key configuration is a separate mounted TOML file. Each principal has exactly one approved prototype role (the role-to-capability mapping below is authoritative) and one or more lowercase hexadecimal SHA-256 key hashes;
+- principal IDs shall match `^[a-z][a-z0-9._-]{0,63}$` (developer decision, Phase 1);
 - raw API keys shall be machine-generated with at least 128 bits of entropy (a requirement on the raw key, not the SHA-256 digest);
 - the service and the checkpoint CLI shall fail fast at startup on invalid configuration, and configuration errors shall not echo raw keys or hash values;
 - configuration is loaded once at startup, and changes require a restart; and
@@ -827,7 +828,7 @@ Event model and API contract decisions (Focused Discussion #1), integrity decisi
   - the exact manifest schema, the representation of retention evidence, and the export audit event payload;
   - the exact commitment encoding;
   - the reserved namespace prefix and the access-event vocabulary names;
-  - exact environment-variable names, configuration file paths, the principal-ID pattern, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
+  - exact environment-variable names, configuration file paths, how the checkpoint CLI is presented with the operator's credential, and the demo-key generation mechanism (the configuration format and validation are decided in ADR-0008);
   - table and schema names;
   - retention batch size and execution bound, export size limit, and reason length.
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).

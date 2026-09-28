@@ -1,0 +1,19 @@
+# Example API-key configuration (ADR-0008, D3).
+#
+# This file intentionally FAILS validation: the placeholders below are not SHA-256 digests,
+# so it cannot be deployed with a known credential. Copy it to a gitignored location and
+# replace each placeholder with the lowercase hex SHA-256 digest of a machine-generated raw
+# API key (at least 128 bits of entropy). Raw keys never go in this file.
+#
+# Roles: writer, auditor, regulator, administrator.
+# Principal IDs must match ^[a-z][a-z0-9._-]{0,63}$ and become recordedBy.
+
+[[principals]]
+id = "example-writer"
+role = "writer"
+key_sha256 = ["REPLACE_WITH_SHA256_HEX_DIGEST"]
+
+[[principals]]
+id = "example-auditor"
+role = "auditor"
+key_sha256 = ["REPLACE_WITH_SHA256_HEX_DIGEST_2"]
