@@ -363,12 +363,14 @@ reflecting only the approved decisions.
 
 - An architecture analysis covering components, flows, a logical data model, integrity and security mapping,
   diagrams, ADR candidates, and a decision list (AD-1 to AD-12). Key findings:
+
   - storing individual payload values as JSONB could change number representation and break commitment
     verification;
   - the HTTP status for redacting a system event was undefined;
   - exports lacked retention evidence for offline authorization of archived values;
   - the truncation and full-rewrite demonstrations depend on checkpoint creation.
 - A reconciliation that corrected the analysis:
+
   - authorization is required before resource lookup, not necessarily before body validation;
   - the offline verifier is independently runnable, not independently implemented;
   - three separate database privilege boundaries;
@@ -423,6 +425,7 @@ Review of the resulting documentation is pending.
 ### 2026-09-28 — Architecture follow-up decisions, requirements reconciliation and documentation review
 
 **Date/Time:** 2026-09-28, 13:08–14:00 UTC (from session timestamps:
+
 - follow-up decisions given at 13:08;
 - diagram update requested at 13:20;
 - requirements reconciliation requested at 13:47;
@@ -456,6 +459,7 @@ code.
   checkpoint files, checkpoint signature verification, use of the trusted checkpoint, and the verifier's
   independence from the service, database, credentials and network).
 - A minimal reconciliation of `docs/requirements.md`, covering:
+
   - FR-1: no separate internal identity;
   - FR-4: checkpoint CLI, verification before signing, refusal on failure;
   - FR-5: the synchronous, bounded, resumable retention statuses;
@@ -467,11 +471,13 @@ code.
 
   Genuinely deferred items were kept deferred.
 - Two FR clarifications:
+
   - FR-1: a retention event is recorded only when a new boundary is established, and resuming a purge creates no
     event;
   - FR-2: archived state comes from the committed retention event, while physical purge may still be in progress
     or resume.
 - A read-only consistency review that found four stale wordings:
+
   - architecture §7 (archived state);
   - two diagram labels describing the checkpoint CLI as reading only the chain head;
   - the NFR-1 foreign-key rationale.
@@ -481,6 +487,7 @@ code.
 - Corrections for the four stale wordings. While editing one diagram label, Claude introduced an XML formatting
   error; validation detected it and Claude fixed it before reporting.
 - A read-only pre-commit review that confirmed:
+
   - all expected files are present;
   - the diagrams are well-formed;
   - `docs/assignment.md` is excluded and was never committed;
@@ -547,6 +554,7 @@ in the affected documentation.
   open items L-D1 to L-D4. L-D1 is the gap in how the offline verifier uses a supplied checkpoint whose sequence is
   neither `asOfSequence` nor an included record's sequence.
 - A neutral comparison of two approaches for L-D1:
+
   - A: hash-only chain-link evidence in exports;
   - B: use a checkpoint only when it can be directly anchored to signed export evidence.
 
@@ -554,6 +562,7 @@ in the affected documentation.
   and security or privacy. It also noted that a checkpoint created after an export cannot match that export's
   `asOfSequence`, because the export audit event is appended above it.
 - Documentation updates recording the decision:
+
   - `docs/requirements.md` (FR-7 verifier behavior, §12 Export row);
   - `docs/architecture.md` (§12 artifacts, §13 offline verifier);
   - ADR-0006 (a new L-D1 subsection with rationale and consequences);
@@ -630,6 +639,7 @@ it is decided, and remaining ambiguity) without changing anything, then to recor
   the retention system event is the persisted resource the operation creates. There is no retention-run resource or
   table, and no GET endpoint for runs.
 - Unchanged:
+
   - the approved retention statuses (`201`, `200`, `422`, `503`);
   - redaction's `201` with `Location`;
   - `GET /audit/verify`.
@@ -896,10 +906,12 @@ points. My answers:
 
 - `security/capabilities.py`: the approved capabilities and the authoritative role-to-capability mapping.
 - `config/errors.py`, `config/toml_file.py`: fail-fast TOML reading with `tomllib`.
+
   - Error messages never echo file content or configured values.
   - Python 3.13's `TOMLDecodeError` has no line or column attributes, so the position is read from the parser
     message's suffix.
 - `config/api_keys.py`: the API-key loader. It rejects:
+
   - unknown fields, duplicate principals, and duplicate hashes (within or across principals);
   - invalid hashes and unknown roles;
   - principals without keys, no principals, and invalid principal IDs.
@@ -907,6 +919,7 @@ points. My answers:
   It produces immutable configured principals with digest bytes.
 - `config/vocabulary.py`: the minimal Scenario C vocabulary loader.
 - `security/authentication.py`: Bearer extraction.
+
   - Exactly one Authorization header is accepted, the scheme is case-insensitive, and the header must have exactly
     two parts.
   - The presented key is hashed with SHA-256 and compared with every configured digest using
@@ -914,12 +927,15 @@ points. My answers:
   - Every failure raises the same detail-free error.
 - `security/authorization.py`: `require_capability`, plus a helper that authenticates, then authorizes.
 - `problem_details.py`:
+
   - a uniform `401` with `WWW-Authenticate: Bearer`, and a `403`;
   - RFC 9457 bodies with `type` `about:blank`, fixed text, and an optional `requestId`.
 - Example files:
+
   - `config/api-keys.example.toml`, whose placeholders intentionally fail validation;
   - `config/client-account-vocabulary.example.toml`, with illustrative names.
 - Tests (101 new, 102 in total, including the existing smoke test):
+
   - configuration validation, including checks that no secrets are echoed;
   - authentication failure cases, multiple headers, and a constant-time comparison call count;
   - a no-logging check;
@@ -989,6 +1005,7 @@ approved requirements rather than work around it.
 **What the AI did:**
 
 - **RFC 8785 library evaluation.**
+
   - Candidates:
     - `rfc8785` (Trail of Bits);
     - `jcs`, whose last release was in 2022;
@@ -1005,10 +1022,12 @@ approved requirements rather than work around it.
   exponent notation, but their canonical text reads back as an integer outside the ±(2^53−1) integer domain. The
   library's output is correct RFC 8785, so changing library would not help. Claude stopped, did not narrow the test,
   and presented three options:
+
   1. bound every number to ±(2^53−1) by numeric value, whatever its notation;
   2. reject only whole numbers from 2^53 up to 10^21;
   3. keep FR-1 unchanged and require every verifier to parse numbers as doubles or never re-parse canonical text.
 - **Ed25519 evaluation** with `cryptography` 50.0.1:
+
   - key generation, and deterministic 64-byte signatures;
   - rejection of a modified message, a modified, truncated, or extended signature, and another key's signature;
   - raw and PEM public-key round trips;
@@ -1030,6 +1049,7 @@ through `uv.lock`. No other dependencies were added.
 **Tests (90 new, 205 in total):**
 
 - `tests/unit/dependency_gates/test_rfc8785_gate.py` (75 tests):
+
   - the RFC samples;
   - key ordering and nested structures;
   - booleans versus integers;
@@ -1103,8 +1123,7 @@ recommendations. My decisions (16:17 UTC):
   `audit-log/v1/content`, `audit-log/v1/record`, and `audit-log/v1/commitment`. Checkpoint and manifest labels stay
   deferred.
 - **A3–A4:**
-  - the `contentHash` object is `{id, eventType, actorId, resourceType, resourceId, timestamp, recordedAt, recordedBy,
-    payload}`, with `timestamp` null when absent;
+  - the `contentHash` object is `{id, eventType, actorId, resourceType, resourceId, timestamp, recordedAt, recordedBy, payload}`, with `timestamp` null when absent;
   - the `recordHash` object is `{sequence, previousHash, contentHash}`.
 - **A5:** the commitment is
   `SHA-256(UTF-8("audit-log/v1/commitment") || 0x00 || RFC8785({"salt": <lowercase hex>, "value": <value>}))`.
@@ -1132,6 +1151,7 @@ recommendations. My decisions (16:17 UTC):
 **What the AI implemented** (`src/audit_log_service/integrity/`, no web, database, or configuration imports):
 
 - `canonical.py`:
+
   - the single canonicalization boundary, delegating RFC 8785 to `rfc8785`;
   - enforcement of the FR-1 numeric domain by value;
   - errors from the library replaced with fixed messages, so values are never echoed;
@@ -1139,6 +1159,7 @@ recommendations. My decisions (16:17 UTC):
 - `timestamps.py`: formats aware datetimes as canonical UTC text, and parses and validates canonical text. Other forms
   are rejected, not normalized.
 - `commitments.py`:
+
   - CSPRNG salts;
   - the commitment formula;
   - `commit_payload`, which produces the committed structure plus values stored separately as canonical text and salt,
@@ -1147,6 +1168,7 @@ recommendations. My decisions (16:17 UTC):
 
   Value and salt fields are excluded from `repr`.
 - `hashing.py`:
+
   - the single genesis constant;
   - `EventContent` and `AuditRecord`, with actor, resource, `recordedBy`, and payload excluded from `repr`;
   - `compute_content_hash`, which validates the UUID, timestamp, and committed-structure forms;
@@ -1419,6 +1441,7 @@ and ADR-0008 before implementation.
 - `config/settings.py`: loads the four D2 variables once, reusing the Phase 1 API-key and vocabulary loaders. It fails
   fast, and errors name the variable, never its value. The database URL is excluded from `repr`.
 - `application/events.py`, the application layer:
+
   - a strict request schema that rejects unknown and server-assigned fields;
   - the D1 constraints;
   - U+0000 and unpaired-surrogate checks;
@@ -1430,6 +1453,7 @@ and ADR-0008 before implementation.
 
   Error messages are fixed text; unknown field names are not echoed.
 - `api/`:
+
   - thin routes in the D4 order;
   - explicit body reading (`415`, `413` including chunked bodies, `400`, and `422` for duplicate keys);
   - the public representation, with the payload rebuilt from the committed structure and stored canonical values, so
@@ -1543,6 +1567,7 @@ note in FR-2.
 **What the AI implemented:**
 
 - `application/queries.py`:
+
   - parameter validation: unknown or repeated parameters rejected; `from` and `to` through the Phase 5 RFC 3339
     normalizer; `from` after `to` rejected; exact-match filters with the append patterns and lengths;
     `includeArchived` as `true` or `false`; `limit` 1 to 200, default 50;
@@ -1764,8 +1789,7 @@ atomicity, partial and repeated redaction, the reason rules, HTTP statuses, and 
 - FR-6 is Phase 8.
 - **`PAYLOAD_VALUE_MISSING`:** placed immediately after `PAYLOAD_VALUE_MISMATCH`, with the exact message "A payload
   value is missing without an authorizing redaction or retention event."
-- **The redaction event:** `AUDIT_LOG_REDACTION`, with payload `{targetId, paths (sorted, actually redacted),
-  reason}`, `timestamp` null, identity fields inherited from the target, and the operator as `recordedBy`.
+- **The redaction event:** `AUDIT_LOG_REDACTION`, with payload `{targetId, paths (sorted, actually redacted), reason}`, `timestamp` null, identity fields inherited from the target, and the operator as `recordedBy`.
 - **The body:** `{paths, reason}`, with 1–100 pointers and a reason of 1–1000 characters that is not whitespace
   only and is stored exactly. The 64 KiB limit, `413`, and `415` apply.
 - **Pointers:** RFC 6901, including the root pointer `""`; a container pointer covers everything beneath it.
@@ -1781,6 +1805,7 @@ atomicity, partial and repeated redaction, the reason rules, HTTP statuses, and 
 - `integrity/commitments.py`: `committed_pointers` and `reveal_payload`, which rebuilds a payload with `null` for
   missing values and returns their sorted pointers.
 - `integrity/verification.py`:
+
   - `PAYLOAD_VALUE_MISSING` added to the enum at its approved position, and a `REDACTION_EVENT_TYPE` constant;
   - `verify_chain` now runs two passes: the unchanged per-record checks, then a missing-value check at the approved
     precedence;
@@ -1789,6 +1814,7 @@ atomicity, partial and repeated redaction, the reason rules, HTTP statuses, and 
 
   Hashing, canonicalization, and commitments are unchanged.
 - `persistence/audit_log.py`:
+
   - `acquire_append_lock`, extracted from `append_event` with the same statements;
   - `delete_payload_values`, which deletes only from `audit_payload_values`.
 - `application/redactions.py`: request validation and `redact`, which, in the caller's transaction, takes the lock,
@@ -1924,6 +1950,7 @@ targets not redactable).
 - `config/settings.py`: the three retention settings, with startup bounds (window 1 second to 100 years; batch size
   1–10,000; batches 1–1,000).
 - `integrity/verification.py`:
+
   - a `RETENTION_EVENT_TYPE` constant;
   - retention coverage: the highest `upToSequence` among pass-1-valid `AUDIT_LOG_RETENTION` events whose value is a
     readable integer with `1 <= upToSequence < ` their own sequence;
@@ -1931,6 +1958,7 @@ targets not redactable).
 
   Precedence, violation types, and hashing are unchanged.
 - `persistence/retention.py`:
+
   - the applicable boundary (the latest retention event with a valid `upToSequence`);
   - the eligible contiguous block (ending before the first record at or after the cutoff);
   - bounded `purge_batch`, which deletes only from `audit_payload_values`, and the unpurged check;
@@ -1942,6 +1970,7 @@ targets not redactable).
   boundary, followed by purge batches each under the lock, with the outcomes and `503`.
 - `api/retention.py`, `api/schemas.py` (`RetentionRun`, and `represent` rendering views), and `api/app.py`.
 - `application/events.py`, `application/queries.py`, `application/redactions.py`, and `api/events.py`:
+
   - return views;
   - `GET` and the query endpoint read in one read-only snapshot;
   - redaction adds the archived `409`.
@@ -2018,6 +2047,7 @@ retention then authorizes those values.
 - **Analysis.** At my request Claude analyzed the reported `redactedPaths` limitation, read-only. It concluded that the
   paths cannot be preserved within all of my constraints: the only readable copy is the redaction event's stored
   values, and the committed structure holds only salted commitments. It compared four options:
+
   - A: accept the limitation;
   - B: exempt the redaction evidence from the purge;
   - C: move the paths into the structure by changing the Phase 8 event schema;
@@ -2026,6 +2056,7 @@ retention then authorizes those values.
   It recommended B.
 - **My decision.** I approved Option B.
 - **What the AI changed:**
+
   - `persistence/retention.py`: `purge_batch` and `has_unpurged_values` share a `_KEPT_REDACTION_EVIDENCE` exclusion,
     so an `AUDIT_LOG_REDACTION` event's `/targetId` and `/paths/*` values are never purged and never make a run
     unfinished. `/reason` and every other value are purged as before. No application, verification, schema, or event
@@ -2034,6 +2065,7 @@ retention then authorizes those values.
     §13 (the stale "reason length" item removed; Phase 8 set 1–1000 characters).
   - ADR-0005: the evidence-preservation exception.
 - **Tests:**
+
   - the previously pinned limitation test now expects `redactedPaths` kept, and only the two evidence rows left at
     or below the boundary;
   - a new integration test shows a complete `redactedPaths` mid-purge, the reason purged, kept rows never counted as
@@ -2083,6 +2115,7 @@ implementation contract.
 **What the AI implemented:**
 
 - `integrity/checkpoints.py`:
+
   - the artifact: `Checkpoint`, `SignedCheckpoint`, `key_id`, `signing_input`, `sign_checkpoint`,
     `encode_artifact`;
   - strict parsing (`parse_artifact`) and `verify_checkpoint`, with fixed failure reasons;
@@ -2204,6 +2237,7 @@ after signing, `503` without a bundle when the event cannot be appended, key sep
 **What the AI implemented:**
 
 - `integrity/exports.py`:
+
   - the manifest, record and bundle model;
   - manifest signing;
   - strict bundle parsing;
@@ -2385,3 +2419,7 @@ Only the 1,000 and 10,000 results are reported; no number is extrapolated.
 No earlier AI usage-log entry was modified.
 
 **Sign-off:** I gave the Phase 12 decisions recorded above. My review and sign-off of the Phase 12 implementation are pending.
+
+### 2026-09-28 — Final developer sign-off
+
+I have reviewed the work recorded in this log, including the architecture and documentation decisions and Phases 0 through 12, including items previously marked as pending review or sign-off. I have also reviewed the final repository state at the commit submitted for evaluation. I sign off on the submission as my individual work and on the accuracy of this AI usage log.
