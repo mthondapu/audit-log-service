@@ -206,3 +206,11 @@ def test_retention_with_unreachable_database_is_503(
     )
 
     assert _assert_problem(response, 503)["detail"] == "The service is temporarily unavailable."
+
+
+def test_readiness_reaches_the_real_database(client: httpx.Client) -> None:
+    # Phase 12 decision P4: unauthenticated, and checks the database with SELECT 1.
+    live = client.get("/health/live")
+    ready = client.get("/health/ready")
+    assert (live.status_code, live.json()) == (200, {"status": "ok"})
+    assert (ready.status_code, ready.json()) == (200, {"status": "ok"})

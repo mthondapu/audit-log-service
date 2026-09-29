@@ -1,6 +1,21 @@
 # audit-log-service
 Tamper-evident, append-only audit log service with a SHA-256 hash chain, chain verification, retention, chain-safe redaction and verifiable exports. FastAPI + PostgreSQL.
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/demo.md](docs/demo.md) | Step-by-step setup and the Scenario A, B, and C walkthrough |
+| [docs/requirements.md](docs/requirements.md) | Requirements baseline and the API definitions of every phase |
+| [docs/architecture.md](docs/architecture.md) | Architecture, trust boundaries, and limitations |
+| [docs/adr/](docs/adr/) | Architecture decision records 0001 to 0009 |
+| [docs/testing.md](docs/testing.md) | Testing approach, test layers, and limitations |
+| [docs/performance.md](docs/performance.md) | NFR-3 measurements and observations |
+| [docs/engineering-summary.md](docs/engineering-summary.md) | Engineering summary, traceability, final validation, limitations |
+| [docs/ai-usage-log.md](docs/ai-usage-log.md) | Record of AI-assisted engineering work |
+
+Requirements: Python 3.13, [uv](https://docs.astral.sh/uv/), Docker (for PostgreSQL), and OpenSSL (for demo keys). `uv sync --locked` installs the pinned dependencies.
+
 ## Local database
 
 The compose file runs PostgreSQL for local development only.
@@ -21,7 +36,7 @@ The compose file runs PostgreSQL for local development only.
 
    The migrations are irreversible: `alembic downgrade` refuses to drop the audit tables.
 
-Application login users are created outside source control as members of `audit_log_app`, which may only select and insert audit records, and the checkpoint CLI's login as a member of `audit_log_checkpoint`, which may only select (see ADR-0009).
+Application login users are created outside source control as members of `audit_log_app`, which may only select and insert audit records, and the checkpoint CLI's login as a member of `audit_log_checkpoint`, which may only select (see ADR-0009). [docs/demo.md](docs/demo.md) shows the commands for a local demonstration.
 
 ## Running the service
 
@@ -43,10 +58,37 @@ The service reads its configuration from the environment once, at startup, and r
 | `AUDIT_LOG_EXPORT_MAX_BYTES` | Optional; bytes per export bundle (default 64 MiB, at most 1 GiB) |
 
 ```sh
-uv run uvicorn audit_log_service.api.app:create_app --factory
+uv run uvicorn audit_log_service.api.app:create_app --factory --no-access-log
 ```
 
-Implemented endpoints: `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, `POST /audit/retention-runs`, and `POST /audit/exports`. The OpenAPI document is served at `/openapi.json` and `/docs`.
+Run it with `--no-access-log`: Uvicorn's access log records full request lines, including query strings such as `?actorId=...`, which the service's own logs deliberately omit (architecture §4). The service's own log lines carry request identifiers, methods, paths, and statuses, never credentials, payload values, salts, keys, or query strings. No logging configuration is applied, so at Python's default WARNING level only denied attempts and unexpected errors appear; INFO lines such as an export's record count appear only if the logging level is set to INFO.
+
+| Endpoint | Capability | Purpose |
+|---|---|---|
+| `GET /health/live` | none | Liveness: `200 {"status": "ok"}` |
+| `GET /health/ready` | none | Readiness: `200` when the database answers, otherwise `503` |
+| `POST /audit/events` | `events:write` | Append an event (`201` with `Location`) |
+| `GET /audit/events` | `events:read` | Query with filters and cursor pagination |
+| `GET /audit/events/{id}` | `events:read` | Retrieve one event |
+| `GET /audit/verify` | `chain:verify` | Verify the whole chain (against the latest checkpoint) |
+| `POST /audit/events/{id}/redactions` | `events:redact` | Redact payload values |
+| `POST /audit/retention-runs` | `retention:run` | Run bounded retention |
+| `POST /audit/exports` | `export:create` | Create a signed export bundle |
+
+The OpenAPI document is served at `/openapi.json` and `/docs`. Examples, with keys in shell variables:
+
+```sh
+curl -s -X POST http://127.0.0.1:8000/audit/events -H "Authorization: Bearer $WRITER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"eventType": "ORDER_PLACED", "actorId": "user-7", "resourceType": "ORDER", "resourceId": "order-1", "payload": {"amount": 12.5}}'
+curl -s "http://127.0.0.1:8000/audit/events?resourceId=order-1&limit=50" -H "Authorization: Bearer $AUDITOR_KEY"
+curl -s http://127.0.0.1:8000/audit/verify -H "Authorization: Bearer $AUDITOR_KEY"
+curl -s -X POST http://127.0.0.1:8000/audit/events/$EVENT_ID/redactions -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" -d '{"paths": ["/amount"], "reason": "customer request"}'
+curl -s -X POST http://127.0.0.1:8000/audit/retention-runs -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+Errors are RFC 9457 Problem Details with a `requestId` that matches the `X-Request-ID` response header.
 
 ## Checkpoints
 
@@ -106,6 +148,15 @@ uv run audit-log-verify export --public-key export-public.pem export.json \
 
 The verifier prints a summary line and one line per checkpoint (`MATCH`, `MISMATCH`, `NOT_APPLICABLE`, or `INVALID`), and exits 0 when everything is valid, 1 otherwise, and 2 on a usage error. It never prints payload values.
 
+## Demonstration tooling
+
+Everything below is for local demonstrations only; [docs/demo.md](docs/demo.md) uses it step by step.
+
+- `scripts/demo_setup.py keys --output local/api-keys.toml` generates random demo API keys, writes only their SHA-256 digests, and prints the raw keys once. `local/` is gitignored; never commit either file.
+- `scripts/demo_setup.py seed` appends the Scenario C demonstration events through the API, with the writer's key on stdin.
+- `scripts/provision_tamper_role.sql` creates the demonstration-only `audit_log_tamper` role: no login, not a superuser, no server-file or program roles (ADR-0009).
+- `scripts/tamper_demo.py` tampers with the database directly as that role (modify, delete, insert, reorder, truncate, rewrite), never through the API, so verification can be shown to detect it. In the local demonstration it logs in as the owner (a superuser) and switches to the tamper role with `SET ROLE`; the database does not enforce that switch, so a dedicated non-superuser login in `audit_log_tamper` only is the production recommendation ([docs/demo.md](docs/demo.md), ADR-0009).
+
 ## Redaction guidance for operators
 
 Redaction (`POST /audit/events/{id}/redactions`, administrators only) permanently deletes the selected payload values and records who did it and why in an `AUDIT_LOG_REDACTION` event. The reason is stored and shown to readers exactly as given, so it must never contain the value being redacted. Redaction cannot be undone, and payload keys and structure remain visible.
@@ -114,3 +165,12 @@ Redaction (`POST /audit/events/{id}/redactions`, administrators only) permanentl
 
 - `uv run pytest tests/unit` runs the unit tests, which need no database.
 - `uv run pytest --cov` runs everything, including the PostgreSQL integration tests. These need `AUDIT_LOG_TEST_DATABASE_URL`: a server URL for a role that can create databases and roles and `SET ROLE` to `audit_log_app` and `audit_log_checkpoint`, such as the compose superuser (`postgresql+psycopg://postgres:<password>@127.0.0.1:5432/postgres`). The tests create and drop their own throwaway databases. If the variable is not set, they fail rather than being skipped.
+- Coverage must be 100% of statements and branches of the `audit_log_service` package (`fail_under = 100`).
+- Quality gates: `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, `uv run bandit -c pyproject.toml -r src migrations scripts`, `uv run pip-audit`, `uv lock --check`.
+- `scripts/benchmark.py` runs the NFR-3 measurements against a disposable PostgreSQL server named by `AUDIT_LOG_BENCHMARK_SERVER_URL`; results are in [docs/performance.md](docs/performance.md). It is not part of the test suite.
+
+See [docs/testing.md](docs/testing.md) for the approach and its limitations.
+
+## Limitations
+
+This is a prototype. The main limitations, detailed in [docs/engineering-summary.md](docs/engineering-summary.md) and the architecture document, are: static API keys and prototype roles rather than an identity provider; plain HTTP for local use; keys, the checkpoint store, and configuration on the application host, with production key management deferred; records after the latest checkpoint are not protected against an attacker with database write access, and checkpoints are created manually; verification and exports verify the whole chain in memory; appends are serialized; exports are single bounded bundles whose completeness is attested by the signature; payload keys remain visible after redaction; and the Scenario C interpretation rests on documented assumptions awaiting stakeholder confirmation.

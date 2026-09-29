@@ -2297,3 +2297,91 @@ after signing, `503` without a bundle when the event cannot be appended, key sep
 
 **Sign-off:** I gave the Phase 11 decisions recorded above. My review and sign-off of the Phase 11 implementation are
 pending.
+
+### 2026-09-28 — Phase 12: performance, final validation, and final documentation
+
+**Date/Time:** 2026-09-28 to 2026-09-29 UTC (from session timestamps):
+
+- planning requested at 23:32, and decisions given at 23:38 on 2026-09-28;
+- benchmark scope changed on 2026-09-29 at 00:46 (finalize with 50,000 records), 00:50 (continue to 50,000 and skip 100,000), and 01:08 ("10k is enough").
+
+**Activity:** Developer-led, AI-assisted closing phase: NFR-3 measurements, the gaps found in a read-only review, demonstration tooling, final documentation, and final validation.
+
+**Tool:** Claude Code (Claude Opus 5.5).
+
+**Planning.** At my request Claude produced a read-only Phase 12 plan. It found these gaps:
+
+- the health endpoints were documented but not implemented;
+- there was no tamper tooling for Scenario A;
+- there was no Scenario C demo data;
+- the demo-key mechanism was open;
+- the engineering summary and testing documents were missing;
+- Uvicorn's access log includes query strings;
+- there are no secondary indexes.
+
+It proposed decisions P1 to P12.
+
+**My decisions:**
+
+- I approved P1 to P7 and P10 to P12.
+- I declined P8 (JSON logging).
+- For P9 I required measuring first, with no index or migration before the results were reviewed.
+- During the run I changed the benchmark scope twice: first to finalize with 50,000 records instead of 100,000, then to "10k is enough".
+
+**What the AI implemented:**
+
+- `api/health.py` (`/health/live`, `/health/ready`, unauthenticated) and its OpenAPI entries.
+- `fail_under = 100`, and `scripts/` added to pyright.
+- `scripts/provision_tamper_role.sql`: a demonstration-only, NOLOGIN, non-superuser role without server-file or program roles, with a self-check.
+- `scripts/tamper_demo.py`: modify, delete, insert, reorder, truncate, and rewrite, only as that role.
+- `scripts/demo_setup.py`: demo keys into the gitignored `local/`, and Scenario C seed data through the API.
+- `scripts/benchmark.py`: the NFR-3 measurements.
+- Tests for all of these.
+- Documentation:
+  - new: `docs/demo.md`, `docs/testing.md`, `docs/performance.md`, `docs/engineering-summary.md`;
+  - updated: README, architecture (§4, §5, §15, §17, §21), ADR-0009, and requirements (NFR-5, FR-8, §13).
+
+**Benchmark history (as it happened):**
+
+1. The first full run completed 1,000, 10,000, and 50,000 records, then failed at the optional 100,000 stage. The cause was a benchmark-script error: its 10% export scope also selected the export events it had just appended, and so reached the 10,000-record export limit, which the service correctly refused. That script saved results only at the end, so the whole run was lost.
+2. Claude corrected the scope (adding the resource type) and made the script save after every section.
+3. The second run completed and saved 1,000 and 10,000. It was stopped at my request while measuring 50,000, and the partial 50,000 results were discarded.
+4. A short supplementary run measured the retention runs with 10,000-value batches and the HTTP sample at 10,000.
+5. Earlier, the script's own unit test found an off-by-one in its percentile formula; that first attempt was stopped and restarted with the corrected formula before any results were used.
+
+Only the 1,000 and 10,000 results are reported; no number is extrapolated.
+
+**Findings reported, not acted on:**
+
+- `EXPLAIN ANALYZE` at 10,000 records shows the archived-boundary and redacted-paths lookups, which every read and append performs, running as sequential scans filtered by `event_type`. A possible migration 0003 is described in `performance.md` for review; no index was added (P9).
+- Because no logging configuration is applied, the service's INFO lines are not emitted at Python's default level (P8 was declined).
+
+**Fixed during validation:** two `ResourceWarning`s from SQLite engines in the new health tests. The engines are now disposed and use `NullPool`, and the unavailable-database case uses a failing connection creator.
+
+**Tests:** 1479 in total (1065 unit, 413 integration, and 1 package test), up from 1436.
+
+**Validation (performed by Claude, results as observed)** against a temporary local PostgreSQL 18 container (localhost only, no password, removed afterwards), plus a separate compose project for the demonstration (removed with its volume):
+
+- `pytest --cov` reported 1479 passed, with 100% statement and branch coverage, `fail_under` met, and the one known `httpx2` warning.
+- The concurrency and lock-timeout tests passed three times in a row.
+- `ruff format --check` and `ruff check` passed.
+- `pyright` (strict) reported 0 errors.
+- `bandit` (source, migrations, and scripts) found no issues.
+- `pip-audit` found no known vulnerabilities.
+- `uv lock --check` and `uv sync --locked` succeeded.
+- `git diff --check` reported no whitespace errors.
+- A clean copy of the 149 committable files installed with `uv sync --locked` and passed the full suite; both console scripts ran.
+- An operational smoke test from nothing, and the `docs/demo.md` walkthrough end to end, ran as recorded in `engineering-summary.md` §5 and §6; Scenario A's modification was detected as `CONTENT_HASH_MISMATCH` at sequence 3.
+- The demo keys, private keys, and demo database were deleted afterwards. Only the benchmark result files remain in the gitignored `local/`.
+
+**Git:** Claude did not stage, commit, push or alter Git history.
+
+**Final review follow-up (after the Phase 12 implementation).** At my request Claude performed a read-only security review of the tamper-demo authentication model, verified in a throwaway database, and then a final consistency review of the documentation. The review:
+
+- corrected the benchmark script's defaults and help text, and the performance-evidence wording, so that the final evidence is stated as 1,000 and 10,000 records only;
+- corrected the documentation of the tamper-demo login and role assumption. The prototype demo logs in as the owner, a superuser, and then uses `SET ROLE audit_log_tamper`, so the database does not enforce a non-superuser boundary. I decided to keep this login for the local demonstration, and the documentation now recommends a dedicated non-superuser login, a member of `audit_log_tamper` only, for production;
+- corrected stale privilege-boundary wording in the architecture document, and clarified the logging claims (INFO lines are not emitted at Python's default level).
+
+No earlier AI usage-log entry was modified.
+
+**Sign-off:** I gave the Phase 12 decisions recorded above. My review and sign-off of the Phase 12 implementation are pending.

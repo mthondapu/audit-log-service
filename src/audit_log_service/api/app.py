@@ -31,6 +31,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from audit_log_service.api.errors import ApiProblem, problem_json, request_id_of
 from audit_log_service.api.events import router as events_router
 from audit_log_service.api.exports import router as exports_router
+from audit_log_service.api.health import router as health_router
 from audit_log_service.api.redactions import router as redactions_router
 from audit_log_service.api.retention import router as retention_router
 from audit_log_service.api.schemas import ExportBundle
@@ -82,6 +83,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(redactions_router)
     app.include_router(retention_router)
     app.include_router(exports_router)
+    app.include_router(health_router)
     _install_error_handling(app)
     app.openapi = lambda: _openapi(app)  # type: ignore[method-assign]
     return app
@@ -193,10 +195,10 @@ def _openapi(app: FastAPI) -> dict[str, Any]:
         schemas[model.__name__] = body_schema
     components["securitySchemes"] = {"bearerAuth": {"type": "http", "scheme": "bearer"}}
 
-    # Every documented operation is an authenticated /audit operation.
-    for operations in schema["paths"].values():
+    # Every /audit operation is authenticated; the health endpoints are not (NFR-2).
+    for path, operations in schema["paths"].items():
         for operation in operations.values():
-            operation["security"] = [{"bearerAuth": []}]
+            operation["security"] = [] if path.startswith("/health/") else [{"bearerAuth": []}]
             responses = operation["responses"]
             # FastAPI's default 422 describes body-parameter validation, which is not used here.
             if "HTTPValidationError" in str(responses.get("422", {})):

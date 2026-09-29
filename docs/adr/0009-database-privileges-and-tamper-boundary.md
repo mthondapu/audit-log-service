@@ -1,6 +1,6 @@
 # ADR-0009: Database privileges and tamper boundary
 
-- **Status:** Accepted (application and checkpoint CLI grants implemented; tamper-actor grants deferred)
+- **Status:** Accepted (application and checkpoint CLI grants implemented; demonstration tamper role implemented in Phase 12)
 - **Date:** 2026-09-28
 - **Decision owner:** Developer (AD-4, RB-1, D4; requirements NFR-1)
 
@@ -38,11 +38,17 @@ Decided by the developer on 2026-09-28, before Phase 4 implementation:
 Decided by the developer on 2026-09-28 (decision CP4 and the trust-boundary finding):
 
 - **Checkpoint CLI role.** `audit_log_checkpoint` is a `NOLOGIN` group role created by the same provisioning script. Migration 0002 grants it `SELECT` on `audit_records` and `audit_payload_values`, and nothing else. The CLI's login (`AUDIT_LOG_CHECKPOINT_DATABASE_URL`) is a member of it. The CLI refuses a login that has `INSERT`, `UPDATE`, `DELETE`, or `TRUNCATE` on either table, and verifies in a read-only transaction.
-- **Tamper-role constraint.** A PostgreSQL superuser, or a role with `pg_write_server_files` or `pg_execute_server_program`, can write files on the database host (for example with `COPY ... TO`). If the checkpoint store were on that host, such a role could rewrite it and break TB-3. The tamper actor must therefore not be a superuser and must not hold those roles; alternatively, the store must be outside the database's host or container. The tamper role itself remains deferred.
+- **Tamper-role constraint.** A PostgreSQL superuser, or a role with `pg_write_server_files` or `pg_execute_server_program`, can write files on the database host (for example with `COPY ... TO`). If the checkpoint store were on that host, such a role could rewrite it and break TB-3. The tamper actor must therefore not be a superuser and must not hold those roles; alternatively, the store must be outside the database's host or container. The tamper role itself was deferred to Phase 12.
+
+## Demonstration tamper role (Phase 12 decision P5)
+
+- **Provisioning.** `scripts/provision_tamper_role.sql` is run by the owner after migrating, in demonstration environments only. It creates `audit_log_tamper` as `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, grants it `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on `audit_records` and `audit_payload_values`, and fails unless the role is non-login, non-superuser, and a member of none of `pg_write_server_files`, `pg_execute_server_program`, and `pg_read_server_files`. It cannot `TRUNCATE`, change the schema, or disable triggers.
+- **Tooling.** `scripts/tamper_demo.py` connects with `AUDIT_LOG_TAMPER_DATABASE_URL`, switches to the role with `SET ROLE`, and refuses unless `current_user` is `audit_log_tamper` and the role is still unprivileged. In the local compose demonstration the connecting login is the owner, a superuser, and every statement the tool runs executes as `audit_log_tamper` with only that role's privileges (verified in Phase 12, including with a trigger recording the effective user). However, the database does not enforce that switch. PostgreSQL checks `SET ROLE` against the login, not the current role, so a session that logged in as the superuser can `RESET ROLE` or `SET ROLE` to any role, including back to the superuser. The limit holds because the tool never does so and checks, before every change, that the effective role is the unprivileged `audit_log_tamper`; that check examines the current role, not the login. This is acceptable for a local demonstration whose operator already holds the owner credentials. **Production recommendation:** a dedicated non-superuser login that is a member of `audit_log_tamper` only, so that the database enforces the boundary; the developer chose to keep the owner login for the local demonstration.
+- **Detection.** Modification, middle deletion, insertion, and reordering are detected by verification alone; tail truncation and a consistent rewrite are detected against a signed checkpoint (FR-4). Integration tests cover each case and the role's restrictions.
 
 ## Deferred
 
-- The tamper-actor role and grants, and how the demonstration environment provisions the tamper actor (within the constraint above).
+- Production database roles and credential management beyond the prototype's group roles.
 
 ## Alternatives considered
 

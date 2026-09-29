@@ -53,19 +53,22 @@ Diagram: [diagrams/component-architecture.drawio](diagrams/component-architectur
 | **Security** | Resolve the Bearer API key to a principal; enforce the route's capability before any resource lookup | configuration |
 | **Request validation** | Strict JSON parsing (duplicate keys, I-JSON rules, U+0000, the ±(2^53−1) numeric domain, finite numbers, request size); Discussion #1 schemas; reserved system-event namespace; configuration-driven `CLIENT_ACCOUNT` validation for public writes | configuration |
 | **Integrity library** | RFC 8785 canonicalization, domain labels, salts and per-value commitments, `contentHash` and `recordHash`, genesis, chain-verification algorithm, missing-value authorization, manifest construction and checks | `rfc8785` (RFC 8785 library), `hashlib` |
-| **Signing** | Load Ed25519 keys, sign checkpoints and manifests, compute `keyId`, verify signatures | `cryptography` |
+| **Signing** | Load Ed25519 keys, sign checkpoints and manifests, compute `keyId`, verify signatures (implemented inside the integrity library: `integrity/checkpoints.py`, `integrity/exports.py`) | `cryptography` |
 | **Append service** | The only writer of chain records; serialized append; reusable inside an existing transaction by the redaction, retention, and export services | integrity library, persistence |
 | **Query service** | Filters, cursor binding, archived boundary, payload reassembly (`null` values, `redactedPaths`, `archived`) | persistence |
-| **Verification service** | Consistent-snapshot streaming verification, checkpoint checks, missing-value authorization | integrity library, persistence, checkpoint store adapter |
+| **Verification service** | Full-chain verification from genesis in one read-only snapshot (the chain is loaded into memory), checkpoint checks, missing-value authorization | integrity library, persistence, checkpoint store adapter |
 | **Redaction service** | Pointer resolution and the atomic redaction transaction | append service, persistence |
 | **Retention service** | Synchronous, bounded retention run | append service, persistence |
 | **Export service** | Snapshot, bound check, pre-signing verification, bundle and manifest construction, signing, export audit event | verification, signing, append service |
 | **Checkpoint store adapter** | Read signed checkpoints from the external store (the service reads only; the CLI writes) | signing |
 | **Persistence** | SQLAlchemy 2.x Core repositories with explicit transaction control (isolation level, advisory lock, snapshot) | PostgreSQL |
 | **Configuration** | Typed settings validated with plain Pydantic v2: scalar and secret settings and file paths from environment variables; the API-key file and the `CLIENT_ACCOUNT` vocabulary as separate mounted TOML files, read with `tomllib`; loaded once at startup, failing fast when invalid | environment, mounted files |
-| **Observability and errors** | Request identifiers, structured logs without payload values, credentials, or query strings; RFC 9457 Problem Details | — |
+| **Observability and errors** | Request identifiers, key=value log lines without payload values, credentials, or query strings (Uvicorn runs with `--no-access-log`); health and readiness; RFC 9457 Problem Details | — |
 | **Checkpoint CLI** (separate program) | Authorized checkpoint creation | integrity library, signing, persistence (read), checkpoint store |
 | **Offline export verifier** (separate program) | Verify export bundles (and checkpoint artifacts) without the service or database | integrity library, signature verification |
+| **Demonstration tooling** (`scripts/`, outside the package) | Demo keys and Scenario C seed data, the demonstration tamper role and tamper tool, NFR-3 benchmarks | the service's public functions; the tamper tool uses the integrity library and the owner or tamper role |
+
+**Packages.** `api/` (API layer, observability), `security/` (security), `application/` (request validation and the append, query, verification, redaction, retention, export, and checkpoint services), `integrity/` (integrity library and signing), `persistence/` (persistence and the checkpoint store adapter and writer), `config/` (configuration), `cli/` (checkpoint CLI), and `offline/` (offline verifier), all under `src/audit_log_service/`.
 
 **Persistence technology.** SQLAlchemy 2.x Core is used instead of the ORM because correctness depends on precise control of advisory locks, isolation levels, snapshots, and multi-statement atomicity; there are no object graphs that would benefit from an ORM.
 
@@ -87,7 +90,7 @@ Request and response semantics are defined in `requirements.md` (FR-1 to FR-7, N
 
 Checkpoint creation is deliberately **not** an HTTP endpoint (Section 12).
 
-**Implemented so far (Phases 5–11):** `POST /audit/events`, `GET /audit/events`, `GET /audit/events/{id}`, `GET /audit/verify`, `POST /audit/events/{id}/redactions`, `POST /audit/retention-runs`, and `POST /audit/exports`. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
+**Implemented (Phases 5–12):** every endpoint in the table. `GET /health/live` returns `200` while the process serves requests; `GET /health/ready` also runs `SELECT 1` and returns `503` Problem Details when the database is unavailable (Phase 12, P4). Neither needs credentials or discloses audit data. Route handlers only authenticate, authorize, and translate HTTP; an application layer validates requests (including Scenario C for `CLIENT_ACCOUNT` events) and calls the persistence layer, which appends through the serialized path and computes nothing cryptographic itself. The request body is read and checked explicitly after authentication and authorization, so that the D4 check order holds and duplicate JSON keys are detected.
 
 **Command-line programs (Phases 10 and 11):** `audit-log-checkpoint create` (the checkpoint CLI) and `audit-log-verify` (the offline verifier: `checkpoint` for checkpoint artifacts, `export` for export bundles). There is no export-creation CLI. See Section 12 and requirements FR-4.
 
@@ -234,13 +237,15 @@ See [ADR-0009](adr/0009-database-privileges-and-tamper-boundary.md).
 | Application role | Normal service operation | Insert and select immutable records; insert, select, and delete recoverable values and salts. No update or delete on immutable records. |
 | Owner / migration role | Schema ownership and migrations | Schema changes; not used by the running service |
 | Checkpoint CLI access | Chain verification before checkpoint signing | Read-only access to the audit data (D4); no insert, update, or delete |
-| Tamper actor | Demonstrations of detection | Privileged direct modification of the database, outside the application trust boundary |
+| Tamper actor | Demonstrations of detection | Direct modification of the database, outside the application trust boundary: the demonstration-only `audit_log_tamper` role (`SELECT`, `INSERT`, `UPDATE`, `DELETE` on the audit tables; no `TRUNCATE`, schema changes, superuser, or server-file roles; Section 15) |
 
-Immutable records are additionally protected by a database-level guard for the application role. In Phase 4 the guard is the application role's privileges: `audit_log_app` (a `NOLOGIN` group role provisioned outside the migrations) has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`, with no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`. There is deliberately no trigger that blocks every role, so the future privileged tamper tooling needs no trigger disabling (ADR-0009). Since Phase 10, the checkpoint CLI uses `audit_log_checkpoint`, a `NOLOGIN` group role with only `SELECT` on both tables (migration 0002). Tamper-actor grants are deferred.
+Immutable records are additionally protected by a database-level guard for the application role. In Phase 4 the guard is the application role's privileges: `audit_log_app` (a `NOLOGIN` group role provisioned outside the migrations) has `SELECT` and `INSERT` on `audit_records`, and `SELECT`, `INSERT`, and `DELETE` on `audit_payload_values`, with no `UPDATE`, `DELETE`, or `TRUNCATE` on `audit_records`. There is deliberately no trigger that blocks every role, so the tamper tooling needs no trigger disabling (ADR-0009). Since Phase 10, the checkpoint CLI uses `audit_log_checkpoint`, a `NOLOGIN` group role with only `SELECT` on both tables (migration 0002). Since Phase 12, demonstrations use `audit_log_tamper` (Section 15).
 
 ## 15. Tamper demonstration boundary
 
 Tamper demonstrations run through separate, privileged tooling, never through the normal application API. The tooling may reuse the integrity library, for example to recompute a consistent forged chain for the full-rewrite demonstration. The tamper actor has no access to the checkpoint store, signing keys, or API-key configuration. How the tamper actor obtains its database privileges is part of the tooling, not the application architecture. It must not be a PostgreSQL superuser or hold `pg_write_server_files` or `pg_execute_server_program`: those can write files on the database host (for example with `COPY ... TO`), which would reach the checkpoint store if it shared that host (ADR-0009).
+
+**Implementation (Phase 12, P5).** `scripts/provision_tamper_role.sql` (demonstration only) creates `audit_log_tamper`: `NOLOGIN`, not a superuser, with `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on the two audit tables and no server-file or program role; the script fails if any of that does not hold. `scripts/tamper_demo.py` switches to that role with `SET ROLE`, refuses to run otherwise, and performs one change per run: modification, middle deletion, forged insertion, reordering, tail truncation, or a consistent rewrite (with hashes recomputed by the integrity library). It is outside the service package and never uses the API. In the local demonstration it connects with the owner login, a superuser; the switch to the tamper role is kept by the tool, not enforced by the database, and a dedicated non-superuser login that is a member of `audit_log_tamper` only is the production recommendation (ADR-0009). See [demo.md](demo.md).
 
 ## 16. Scenario C architecture
 
@@ -262,7 +267,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 | TB-3 | Database → checkpoint store and signing keys | Stored outside the database; not accessible to the tamper actor, which must not hold server-file or program-execution privileges; the service reads the store only, with the public key |
 | TB-4 | Operator → checkpoint CLI | API key from stdin; `checkpoint:create` required; read-only database role; configured store only. File access to the signing key is the actual signing boundary |
 | TB-5 | Service → export recipient | Ed25519-signed manifest verified with an out-of-band trusted public key |
-| TB-6 | Tamper actor → database | Outside the application trust boundary; detected by verification and checkpoints |
+| TB-6 | Tamper actor → database | Outside the application trust boundary: a demonstration-only, non-superuser role used only by separate tooling; detected by verification and checkpoints |
 
 ## 18. Security considerations
 
@@ -308,9 +313,7 @@ Scenario C follows the prototype clarification and assumptions in `requirements.
 ## 21. Deferred implementation details
 
 - Production key lifecycle, storage, and distribution.
-- Access-event vocabulary names.
-- Configuration file paths and the demo-key generation mechanism. The configuration format and validation, and the environment-variable names, are decided in ADR-0008 (D3).
-- Tamper-actor database grants, limits, batch sizes, and cursor encoding. The tables, columns, application-role grants, advisory-lock key, and lock timeout are implemented in Phase 4 (ADR-0003, ADR-0009).
+- Production access-event vocabulary names (the example vocabulary is configuration used for the demonstration; FR-8).
 
 ## 22. Architecture decision references
 

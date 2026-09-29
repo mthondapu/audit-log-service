@@ -82,6 +82,8 @@ def test_only_the_implemented_operations_are_documented(openapi: dict[str, Any])
         ("/audit/events/{id}/redactions", "post"),
         ("/audit/retention-runs", "post"),
         ("/audit/exports", "post"),
+        ("/health/live", "get"),
+        ("/health/ready", "get"),
     }
 
 
@@ -283,9 +285,20 @@ def test_operations_require_bearer_authentication(openapi: dict[str, Any]) -> No
     assert openapi["components"]["securitySchemes"] == {
         "bearerAuth": {"type": "http", "scheme": "bearer"}
     }
-    for methods in openapi["paths"].values():
+    for path, methods in openapi["paths"].items():
         for operation in methods.values():
-            assert operation["security"] == [{"bearerAuth": []}]
+            expected: list[dict[str, list[str]]] = (
+                [] if path.startswith("/health/") else [{"bearerAuth": []}]
+            )
+            assert operation["security"] == expected
+
+
+def test_health_endpoints_document_their_statuses(openapi: dict[str, Any]) -> None:
+    live = openapi["paths"]["/health/live"]["get"]
+    ready = openapi["paths"]["/health/ready"]["get"]
+    assert set(live["responses"]) == {"200"}
+    assert set(ready["responses"]) == {"200", "503"}
+    assert _problem_codes(ready["responses"]) == {"503"}
 
 
 def test_export_documents_its_body_statuses_and_bundle(openapi: dict[str, Any]) -> None:

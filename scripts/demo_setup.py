@@ -1,0 +1,183 @@
+"""DEMONSTRATION ONLY: demo API keys and Scenario C seed data (Phase 12 decision P6).
+
+    uv run python scripts/demo_setup.py keys --output local/api-keys.toml > local/demo-keys.env
+    uv run python scripts/demo_setup.py seed --base-url http://127.0.0.1:8000 < local/writer-key
+
+`keys` generates one random raw API key (256 bits) per demo principal, writes only their SHA-256
+digests to the API-key file, and prints the raw keys once, as shell `export` lines, on stdout. It
+refuses to overwrite an existing file. Keep both files in the gitignored `local/` directory; never
+commit them.
+
+`seed` reads the writer's raw key from stdin (without echo on a terminal) and appends the Scenario C
+demonstration events through the normal API (`POST /audit/events`): client-account views,
+updates, and a denied access, for two accounts, plus one ordinary order event. The events use the
+example vocabulary (config/client-account-vocabulary.example.toml) and record field names, never
+field values (SC-A3).
+
+Exit codes: 0 done, 1 an append was rejected, 2 usage or configuration error.
+"""
+
+import argparse
+import getpass
+import hashlib
+import secrets
+import sys
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, NoReturn, TextIO
+
+import httpx
+
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+DEMO_PRINCIPALS = (
+    ("demo-writer", "writer", "WRITER_KEY"),
+    ("demo-auditor", "auditor", "AUDITOR_KEY"),
+    ("demo-regulator", "regulator", "REGULATOR_KEY"),
+    ("demo-admin", "administrator", "ADMIN_KEY"),
+)
+SCENARIO_C_EVENTS: tuple[dict[str, Any], ...] = (
+    {
+        "eventType": "CLIENT_ACCOUNT_VIEWED",
+        "actorId": "advisor-17",
+        "resourceType": "CLIENT_ACCOUNT",
+        "resourceId": "acct-1001",
+        "payload": {"purpose": "annual-review", "channel": "branch"},
+    },
+    {
+        "eventType": "CLIENT_ACCOUNT_UPDATED",
+        "actorId": "advisor-17",
+        "resourceType": "CLIENT_ACCOUNT",
+        "resourceId": "acct-1001",
+        "payload": {
+            "purpose": "address-change",
+            "channel": "branch",
+            "fieldsAccessed": ["postalAddress"],
+        },
+    },
+    {
+        "eventType": "CLIENT_ACCOUNT_VIEWED",
+        "actorId": "support-agent-4",
+        "resourceType": "CLIENT_ACCOUNT",
+        "resourceId": "acct-1002",
+        "payload": {"purpose": "support-ticket", "channel": "phone"},
+    },
+    {
+        "eventType": "CLIENT_ACCOUNT_ACCESS_DENIED",
+        "actorId": "contractor-9",
+        "resourceType": "CLIENT_ACCOUNT",
+        "resourceId": "acct-1001",
+        "payload": {"channel": "web"},
+    },
+    {
+        "eventType": "CLIENT_ACCOUNT_VIEWED",
+        "actorId": "advisor-17",
+        "resourceType": "CLIENT_ACCOUNT",
+        "resourceId": "acct-1002",
+        "payload": {"purpose": "cross-sell", "channel": "web"},
+    },
+    {
+        "eventType": "ORDER_PLACED",
+        "actorId": "advisor-17",
+        "resourceType": "ORDER",
+        "resourceId": "order-5001",
+        "payload": {"amount": 250.0, "items": ["fund-a", "fund-b"]},
+    },
+)
+
+
+class _UsageError(Exception):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise _UsageError(message)
+
+
+def main() -> int:
+    return run(sys.argv[1:], stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+
+
+def run(
+    argv: Sequence[str],
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    stderr: TextIO,
+    client: httpx.Client | None = None,
+) -> int:
+    parser = _Parser(prog="demo_setup.py", description="Demonstration-only setup.")
+    commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
+    commands.add_parser("keys").add_argument("--output", type=Path, required=True)
+    commands.add_parser("seed").add_argument("--base-url", default="http://127.0.0.1:8000")
+    try:
+        arguments = parser.parse_args(argv)
+    except _UsageError as error:
+        stderr.write(f"usage error: {error}\n")
+        return EXIT_USAGE
+    if arguments.command == "keys":
+        return write_keys(arguments.output, stdout, stderr)
+    key = _read_key(stdin)
+    if not key:
+        stderr.write("usage error: the writer's API key must be given on stdin\n")
+        return EXIT_USAGE
+    if client is None:
+        with httpx.Client(base_url=arguments.base_url, timeout=30) as owned:
+            return seed(owned, key, stdout, stderr)
+    return seed(client, key, stdout, stderr)
+
+
+def write_keys(output: Path, stdout: TextIO, stderr: TextIO) -> int:
+    """Write the demo API-key file and print the raw keys once."""
+    if output.exists():
+        stderr.write(f"usage error: {output} already exists; it is never overwritten\n")
+        return EXIT_USAGE
+    raw = {name: secrets.token_urlsafe(32) for name, _, _ in DEMO_PRINCIPALS}
+    lines = [
+        "# DEMONSTRATION ONLY: generated by scripts/demo_setup.py. Never commit this file.",
+    ]
+    for name, role, _ in DEMO_PRINCIPALS:
+        digest = hashlib.sha256(raw[name].encode("utf-8")).hexdigest()
+        lines += [
+            "",
+            "[[principals]]",
+            f'id = "{name}"',
+            f'role = "{role}"',
+            f'key_sha256 = ["{digest}"]',
+        ]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8", newline="\n") as file:
+        file.write("\n".join(lines) + "\n")
+    stdout.write("# DEMONSTRATION ONLY: raw API keys, shown once. Keep them out of Git.\n")
+    for name, _, variable in DEMO_PRINCIPALS:
+        stdout.write(f"export {variable}='{raw[name]}'\n")
+    stderr.write(f"wrote {output}\n")
+    return EXIT_OK
+
+
+def seed(client: httpx.Client, key: str, stdout: TextIO, stderr: TextIO) -> int:
+    """Append the Scenario C demonstration events through the API."""
+    headers = {"Authorization": f"Bearer {key}"}
+    for body in SCENARIO_C_EVENTS:
+        response = client.post("/audit/events", json=body, headers=headers)
+        if response.status_code != 201:
+            stderr.write(f"append rejected with {response.status_code}: {response.text}\n")
+            return EXIT_FAILED
+        created = response.json()
+        stdout.write(
+            f"sequence {created['sequence']}: {created['eventType']} "
+            f"{created['resourceType']}/{created['resourceId']} by {created['actorId']}\n"
+        )
+    return EXIT_OK
+
+
+def _read_key(stdin: TextIO) -> str:
+    if stdin.isatty():
+        return getpass.getpass("Writer API key: ")
+    return stdin.readline().strip()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

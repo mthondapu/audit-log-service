@@ -510,6 +510,8 @@ This interpretation remains subject to stakeholder confirmation. The developer's
 - configuration-driven validation of events submitted through the public API with `resourceType` `CLIENT_ACCOUNT`: the `eventType` must belong to the configured access-event vocabulary, and the configured required payload keys must be present. Reserved system events are exempt, because their schemas are server-defined. The validation is configuration, not a hard-coded business rule; and
 - regulator and auditor use of the existing query (FR-2), verification (FR-3), and export (FR-7) capabilities.
 
+The demonstration data (Phase 12, decision P6) is appended through the normal API by `scripts/demo_setup.py seed`: client-account views, an update, and a denied access for two accounts, plus an ordinary order event, following the example vocabulary; the walkthrough is [demo.md](demo.md) §2.
+
 **Production considerations outside the prototype:**
 
 - limiting regulator access to specific accounts or periods;
@@ -668,6 +670,8 @@ This should include, where appropriate:
 - readiness information.
 
 Sensitive audit payload values shall not be unnecessarily written to operational logs.
+
+Implemented (Phase 12, decisions P4, P7, and P8): unauthenticated `GET /health/live` and `GET /health/ready` (the latter checks the database with `SELECT 1` and returns `503` Problem Details when it is unavailable); a server-generated request identifier on every response and in every error; and key=value operational log lines without credentials, payload values, salts, keys, or query strings, with Uvicorn run as `--no-access-log`. No logging configuration is applied, so at Python's default WARNING level only denied attempts and unexpected errors are emitted; INFO lines (such as an export's record count) appear only when the level is configured. JSON-formatted logs were not adopted.
 
 ### NFR-6 — Quality
 
@@ -911,13 +915,11 @@ Requirements requiring technical design decisions are intentionally not finalize
 
 Event model and API contract decisions (Focused Discussion #1), integrity decisions (Focused Discussion #2), retention, redaction, and export decisions (Focused Discussion #3), and security and Scenario C decisions (Focused Discussion #4) have been incorporated. The following remain open:
 
-- **Security:**
-  - tamper-actor database role and grants, and provisioning of the tamper-demonstration environment (the privilege boundaries are decided in NFR-1; the application and checkpoint CLI roles and their grants are decided in ADR-0009).
 - **Key management:**
   - the production key lifecycle, storage, and distribution.
-- **Implementation planning:**
-  - the access-event vocabulary names;
-  - configuration file paths and the demo-key generation mechanism (the configuration format and validation, and the environment-variable names, are decided in ADR-0008).
+- **Scenario C vocabulary:** production access-event vocabulary names are configuration to be agreed with stakeholders; the example vocabulary is used for the demonstration.
+
+Resolved in Phase 12: the demonstration tamper role and its provisioning (ADR-0009), the demo-key generation mechanism (`scripts/demo_setup.py`, writing to the gitignored `local/` directory), and configuration file paths (supplied through the ADR-0008 environment variables; the demonstration uses `local/`). The NFR-3 measurements are recorded in [performance.md](performance.md).
 - **Scenario C:** the stakeholder clarification questions (Section 8) remain unanswered by design; the prototype proceeds on the documented assumptions (FR-8).
 
 Scenario C remains open to stakeholder clarification regarding its business meaning and production requirements; the prototype proceeds using the documented developer assumptions and implementation boundary.

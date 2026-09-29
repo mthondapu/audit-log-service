@@ -6,10 +6,11 @@ generated per test and written only under the test's temporary directory.
 """
 
 import hashlib
+import importlib.util
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Any, cast
 
 import httpx
@@ -203,6 +204,23 @@ def write_export_bundle(tmp_path: Path) -> ExportBundleWriter:
         return path, [entry.record.record_hash for entry in chain]
 
     return write
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+
+
+@pytest.fixture
+def load_script() -> Callable[[str], ModuleType]:
+    """Import a script from scripts/ by file name; the directory is not a package."""
+
+    def load(name: str) -> ModuleType:
+        spec = importlib.util.spec_from_file_location(f"scripts_{name}", SCRIPTS_DIR / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    return load
 
 
 def api_client(app: Any) -> httpx.Client:
